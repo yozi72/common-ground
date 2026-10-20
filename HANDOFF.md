@@ -9,6 +9,14 @@ Short status for anyone reviewing this codebase (including an AI reviewer). Upda
 
 ## What works (verified)
 
+- **Daily shared session** (default 6–7 pm America/Los_Angeles, every day; `policy_config`: `session_days`, `session_start_time`, `session_duration_minutes`, `session_timezone`). One implementation (`src/lib/schedule.ts`, SQL `session_window()`) drives server eligibility, lobby countdowns, calendar export and reminders. Backend enforcement: `join_queue`, `run_matching`, `request_reconnection` refuse outside the window; queue entries close at session end; invitations created before closing keep their 60-second deadline; existing conversations continue.
+- **Readiness-based matching:** lobby heartbeats (5 s) with server-side expiry (45 s grace → auto-resume), nonresponders paused until "I'm ready", responsive person requeued with original priority and an avoid list, oldest-first partner choice, blocks and eligibility revalidated at acceptance, matching atomic under an advisory lock.
+- **Consented broadening:** after 60 s "allow a smaller difference" (threshold 0.5 instead of 1.0), after 120 s "anyone available" (0). Stored server-side per queue entry, reversible, stricter of the two preferences wins.
+- **Automatic local time:** device IANA timezone (no location access) with a manual override in Profile; server-synchronised countdowns refreshed on focus; "Pacific time" fallback label when detection fails.
+- **Reminders:** Web Push (VAPID, service worker, PWA manifest, iOS Add-to-Home-Screen guidance), optional email, Apple/Google calendar export (TZID recurrence, 10-minute alarm, stable UID). Sends are idempotent per (account, session, channel, device), retried up to 3 times inside the 5-minute window, never after the session starts; 404/410 subscriptions are disabled; endpoints move with the account on shared devices; deletion cascades.
+- **Scheduler:** Supabase `pg_cron` + `pg_net` call `/api/cron/tick` every minute (URL/secret in `worker_config`); each run logs a `worker_tick` metric event. No paid plan needed.
+- **Metrics (Review → Metrics):** queue joins, time to invitation (p50/p90), time until both accept, % starting within 2 minutes, unmatched leaves and rate, missed/declined invitations, broadening, reminder opt-ins and delivery outcomes. No conversation text or answers.
+
 - Email magic-link sign-in (Supabase Auth, custom SMTP via Gmail for the pilot).
 - Onboarding: adult attestation, consent, coarse profile, 5-item questionnaire (one question per screen, slider).
 - Waiting list → block-aware matching on questionnaire difference → two-party invitation with 3-minute expiry → conversation.
@@ -24,8 +32,8 @@ Short status for anyone reviewing this codebase (including an AI reviewer). Upda
 ## Unfinished, mocked, or known issues
 
 - **Email sender:** Gmail SMTP (app password) for sign-in links and now also for match-ready / reconnect notices (nodemailer; a test notice was delivered 2026-10-20). Capped ~500/day, "from" is a personal address. The lobby only offers the email option when a sender is configured. A sending domain + Resend is the planned replacement.
-- **Worker scheduling:** Vercel free plan runs cron once a day (used for retention). Housekeeping otherwise runs opportunistically from user activity (heartbeat/lobby/queue). Partner-away and abandonment timing is therefore only reliable while someone is active; an external minute-level pinger (`POST /api/cron/tick`, bearer `CRON_SECRET`) is recommended for quiet hours.
-- **Browser push notifications:** not built. In-app + optional email only.
+- **Worker scheduling:** `pg_cron` in the hosted database calls the worker every minute (verified: `worker_tick` events with `source: pg_cron`). Vercel's daily cron still runs the retention purge. If the database scheduler ever stops, housekeeping still runs opportunistically from user activity.
+- **Push on real devices:** implemented and exercised in automated tests with fake endpoints; **not yet verified on a physical iPhone/Android** (needs a real device: Profile → Reminders → Enable phone notifications; on iPhone, Add to Home Screen first). Lock-screen text is neutral and fixed.
 - **Contact sharing:** disabled by policy; no code path.
 - **Realtime in production:** lobby and conversation screens poll (10 s / 5 s) and also subscribe to Supabase Realtime; the subscription has not been separately verified on the hosted project (polling covers it). Background/hidden tabs are throttled by browsers, so a tab left in the background may update slowly until it is focused.
 - **Question-after-reveal latency:** 3–10 s in dev (server `after()` hook + 5 s polling fallback); realtime should be faster in production but hasn't been measured there.
@@ -70,7 +78,16 @@ All nine findings were confirmed and fixed in `2c165c7` (migration `0004_review_
 
 **Live two-user test on the deployed app (2026-10-20, after `2c165c7`):** user A in a browser, user B via `scripts/qa-partner.mjs` against the hosted project. Observed: match formed; B accepted first and the conversation did *not* open until A accepted (fix 2); AI-generated question 1; A's custom answer with a phone number was held by the real model with an explanation and a rewording; accepting it delivered the reworded text and revealed both answers; question 2 generated; leave → reflection; both said yes → "You both said yes" and the partner listed under Friends. Test accounts were deleted afterwards.
 
+## Session schedule & reminders — configuration
+
+- Change the schedule in Review → Policy (`session_days` as `[0..6]`, `session_start_time` `"HH:MM"`, `session_duration_minutes`, `session_timezone` IANA). All surfaces read the same values; downloaded calendar events do **not** update themselves.
+- Broadening thresholds: `broaden_relaxed_after_seconds` (60), `broaden_any_after_seconds` (120), `relaxed_difference_score` (0.5), `min_difference_score` (1.0). Presence: `presence_grace_seconds` (45). Invitation acceptance: `invitation_ttl_seconds` (60).
+- Push needs `NEXT_PUBLIC_VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` (set on Vercel). Email reminders use the same SMTP/Resend settings as other mail.
+- Scheduler: `worker_config` rows `tick_url` and `cron_secret` on the hosted database (set via service role); the cron job `common-ground-tick` is created by migration 0005.
+
 ## Change log
+
+- 2026-10-20 — Daily session, readiness matching, broadening, reminders, metrics, DB scheduler (see sections above). 61 automated tests: schedule (PDT/PST, Arizona, Hawaii, Tokyo date rollover, midnight crossing, weekday-only, spring-forward, reminder window), calendar recurrence/UID/Google link, reminder idempotency/retries/stale/unsubscribe/next-only/shared device, session gating and close, invitation grace at close, nonresponder pause + priority + avoid, stale presence, broadening consent + mutual preference, block at acceptance, plus all earlier security/privacy tests. Not independently tested: push delivery on a physical phone; a real two-user run during a live 6 pm Pacific session (the local two-user flow and the earlier live run cover the mechanics).
 
 - 2026-10-20 — Re-review follow-ups: `safeNext` now validates the resolved origin (fixes `/a/..//example.org` bypass) with unit tests; Friends list has no client-side override and reflects server state after expiry/decline (DB test). 39 tests.
 
