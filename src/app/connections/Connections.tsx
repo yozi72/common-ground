@@ -7,7 +7,10 @@ type Conn = { connection_id: string; peer_alias: string; my_alias: string; since
 
 export function Connections({ initial }: { initial: Conn[] }) {
   const router = useRouter();
-  const [list, setList] = useState(initial);
+  // Rendered from props so router.refresh() always shows fresh data; only the
+  // just-sent invitation ids are kept locally until the next refresh.
+  const [sentInvites, setSentInvites] = useState<Record<string, string>>({});
+  const list = initial.map((c) => (sentInvites[c.connection_id] ? { ...c, pending_invitation_id: sentInvites[c.connection_id] } : c));
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
 
@@ -17,7 +20,8 @@ export function Connections({ initial }: { initial: Conn[] }) {
     const json = await res.json().catch(() => ({}));
     setBusy(null);
     if (!res.ok) { setError(json.error ?? "Something went wrong"); return; }
-    setList(list.map((c) => (c.connection_id === id ? { ...c, pending_invitation_id: json.invitation_id } : c)));
+    setSentInvites((m) => ({ ...m, [id]: json.invitation_id }));
+    router.refresh();
   }
 
   return (

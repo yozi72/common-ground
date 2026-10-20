@@ -7,7 +7,7 @@ import { TwoCups, Bridge } from "@/components/Illustrations";
 type Request = { id: string; status: string; expires_at: string; notify_email: boolean } | null;
 type Invitation = { id: string; kind: string; expires_at: string; my_decision: string | null };
 
-export function Lobby({ userId, initialRequest, initialInvitations }: { userId: string; initialRequest: Request; initialInvitations: Invitation[] }) {
+export function Lobby({ userId, initialRequest, initialInvitations, emailAvailable = false }: { userId: string; initialRequest: Request; initialInvitations: Invitation[]; emailAvailable?: boolean }) {
   const router = useRouter();
   const [request, setRequest] = useState<Request>(initialRequest);
   const [invitations, setInvitations] = useState<Invitation[]>(initialInvitations);
@@ -113,10 +113,14 @@ export function Lobby({ userId, initialRequest, initialInvitations }: { userId: 
           <TwoCups className="w-32 h-auto mx-auto" />
           <h2 className="font-semibold text-xl text-center">Ready to talk?</h2>
           <p className="muted text-sm">You'll be paired with another adult whose questionnaire answers differ from yours. You'll both get the same questions, and you can leave at any time.</p>
-          <label className="flex gap-3 items-start cursor-pointer">
-            <input type="checkbox" className="mt-1 h-5 w-5" checked={notifyEmail} onChange={(e) => setNotifyEmail(e.target.checked)} />
-            <span className="text-sm">Email me when a match is ready (so I don't have to keep this open). Emails may be delayed.</span>
-          </label>
+          {emailAvailable ? (
+            <label className="flex gap-3 items-start cursor-pointer">
+              <input type="checkbox" className="mt-1 h-5 w-5" checked={notifyEmail} onChange={(e) => setNotifyEmail(e.target.checked)} />
+              <span className="text-sm">Email me when a match is ready (so I don't have to keep this open). Emails may take a minute or two.</span>
+            </label>
+          ) : (
+            <p className="muted text-sm">Keep this page open while you wait; email notices aren't set up yet.</p>
+          )}
           <button className="btn btn-primary w-full" disabled={busy} onClick={join}>{busy ? "Joining…" : "Join the waiting list"}</button>
         </section>
       )}

@@ -46,5 +46,6 @@ export async function generateNextQuestion(conversationId: string, phase: "openi
     p_rationale: q.rationale_internal,
   });
   if (error) throw new Error(`insert_question: ${error.message}`);
-  return id as string;
+  // null when the conversation ended or another worker inserted first
+  return (id as string | null) ?? null;
 }

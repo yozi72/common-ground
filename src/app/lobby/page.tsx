@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { Lobby } from "./Lobby";
+import { env } from "@/lib/env";
 
 export const dynamic = "force-dynamic";
 
@@ -41,5 +42,5 @@ export default async function LobbyPage() {
   type Inv = { invitation_id: string; decision: string | null; match_invitations: { id: string; kind: string; status: string; expires_at: string; conversation_id: string | null } };
   const invs = ((invitations ?? []) as unknown as Inv[]).map((i) => ({ id: i.invitation_id, kind: i.match_invitations.kind, expires_at: i.match_invitations.expires_at, my_decision: i.decision }));
 
-  return <Lobby userId={auth.user.id} initialRequest={request ?? null} initialInvitations={invs} />;
+  return <Lobby userId={auth.user.id} initialRequest={request ?? null} initialInvitations={invs} emailAvailable={env.emailConfigured()} />;
 }

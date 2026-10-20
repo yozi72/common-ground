@@ -445,6 +445,112 @@ describe("reflection and reconnection", () => {
   });
 });
 
+describe("review regressions (2026-10-20)", () => {
+  it("1: a client cannot move its participant row into another conversation", async () => {
+    const a = await user("rv1-a", LEFT);
+    const b = await user("rv1-b", RIGHT);
+    const c = await user("rv1-c", LEFT);
+    const d = await user("rv1-d", RIGHT);
+    const conv1 = await openConversation(a, b);
+    await resetQueue();
+    const conv2 = await openConversation(c, d);
+    const { data: mine } = await c.client.from("participants").select("id").eq("conversation_id", conv2).single();
+    const r = await c.client.from("participants").update({ conversation_id: conv1 }).eq("id", mine!.id).select();
+    expect(r.error ?? (r.data?.length === 0 ? null : new Error("updated"))).not.toBeNull();
+    const { data: still } = await admin().from("participants").select("conversation_id").eq("id", mine!.id).single();
+    expect(still!.conversation_id).toBe(conv2);
+    const { data: msgs } = await c.client.from("conversation_questions").select("id").eq("conversation_id", conv1);
+    expect(msgs).toEqual([]);
+    // heartbeat via RPC still works
+    const { error } = await c.client.rpc("heartbeat", { p_conversation: conv2 });
+    expect(error).toBeNull();
+  });
+
+  it("2: one acceptance does not open the conversation", async () => {
+    const a = await user("rv2-a", LEFT);
+    const b = await user("rv2-b", RIGHT);
+    const { invitationId } = await matchPair(a, b);
+    const { data: r1 } = await a.client.rpc("respond_invitation", { p_invitation: invitationId, p_accept: true });
+    expect(r1.status).toBe("waiting_for_other");
+    const { data: convs } = await admin().from("conversations").select("id").eq("invitation_id", invitationId);
+    expect(convs).toEqual([]);
+    const { data: r2 } = await b.client.rpc("respond_invitation", { p_invitation: invitationId, p_accept: true });
+    expect(r2.status).toBe("opened");
+  });
+
+  it("3: an approved custom answer is hidden from the peer until the question is revealed", async () => {
+    const a = await user("rv3-a", LEFT);
+    const b = await user("rv3-b", RIGHT);
+    const conv = await openConversation(a, b);
+    const qid = await generateNextQuestion(conv, "opening");
+    const { data: pid } = await a.client.rpc("submit_message", { p_conversation: conv, p_client_send_id: "rv3-ans", p_body: "secret until both answer", p_kind: "answer", p_question: qid });
+    await processPendingBatch();
+    const { data: p } = await a.client.from("pending_messages").select("status").eq("id", pid).single();
+    expect(p!.status).toBe("approved");
+    const { data: peerView } = await b.client.from("approved_messages").select("body").eq("conversation_id", conv);
+    expect(peerView).toEqual([]);
+    const { data: ownView } = await a.client.from("approved_messages").select("body").eq("conversation_id", conv);
+    expect(ownView!.map((m) => m.body)).toEqual(["secret until both answer"]);
+    await b.client.rpc("answer_with_choice", { p_question: qid, p_choice: 0 });
+    const { data: peerView2 } = await b.client.from("approved_messages").select("body").eq("conversation_id", conv);
+    expect(peerView2!.map((m) => m.body)).toEqual(["secret until both answer"]);
+  });
+
+  it("4: retention clears custom answer text with the messages", async () => {
+    const a = await user("rv4-a", LEFT);
+    const b = await user("rv4-b", RIGHT);
+    const conv = await openConversation(a, b);
+    const qid = await generateNextQuestion(conv, "opening");
+    await a.client.rpc("submit_message", { p_conversation: conv, p_client_send_id: "rv4-ans", p_body: "old words", p_kind: "answer", p_question: qid });
+    await processPendingBatch();
+    await b.client.rpc("answer_with_choice", { p_question: qid, p_choice: 0 });
+    await a.client.rpc("leave_conversation", { p_conversation: conv });
+    await admin().from("conversations").update({ ended_at: new Date(Date.now() - 31 * 86400_000).toISOString() }).eq("id", conv);
+    const { data: out } = await admin().rpc("purge_retention");
+    expect(out.custom_answers).toBeGreaterThanOrEqual(1);
+    const { data: ans } = await admin().from("question_answers").select("custom_text").eq("conversation_id", conv);
+    expect(ans!.every((x) => x.custom_text === null)).toBe(true);
+    const { data: msgs } = await admin().from("approved_messages").select("id").eq("conversation_id", conv);
+    expect(msgs).toEqual([]);
+  });
+
+  it("5: outsiders cannot cancel, appeal or accept a revision of someone else's message", async () => {
+    const a = await user("rv5-a", LEFT);
+    const b = await user("rv5-b", RIGHT);
+    const c = await user("rv5-c", MIXED);
+    const conv = await openConversation(a, b);
+    await finishOpeningRound(a, b, conv, generateNextQuestion);
+    const { data: pid } = await a.client.rpc("submit_message", { p_conversation: conv, p_client_send_id: "rv5-1", p_body: "email me at x@y.com" });
+    await processPendingBatch();
+    for (const who of [c, b]) {
+      const r1 = await who.client.rpc("cancel_pending", { p_pending: pid });
+      expect(r1.error?.code).toBe("42501");
+      const r2 = await who.client.rpc("file_appeal", { p_pending: pid, p_note: "x" });
+      expect(r2.error?.code).toBe("42501");
+      const r3 = await who.client.rpc("accept_revision", { p_pending: pid });
+      expect(r3.error?.code).toBe("42501");
+    }
+    const { data: p } = await admin().from("pending_messages").select("status").eq("id", pid).single();
+    expect(p!.status).toBe("revise");
+    const { error } = await a.client.rpc("accept_revision", { p_pending: pid });
+    expect(error).toBeNull();
+  });
+
+  it("6: at most one open question per conversation, even under overlapping inserts", async () => {
+    const a = await user("rv6-a", LEFT);
+    const b = await user("rv6-b", RIGHT);
+    const conv = await openConversation(a, b);
+    const args = { p_conversation: conv, p_phase: "opening", p_text: "Q?", p_choices: ["a", "b", "c"], p_followup_a: null, p_followup_b: null, p_source: "bank", p_sensitive: false, p_rationale: "" };
+    const results = await Promise.all([admin().rpc("insert_question", args), admin().rpc("insert_question", args), admin().rpc("insert_question", args)]);
+    const ids = results.map((r) => r.data).filter(Boolean);
+    expect(ids.length).toBe(1);
+    const { data: open } = await admin().from("conversation_questions").select("id").eq("conversation_id", conv).eq("status", "open");
+    expect(open!.length).toBe(1);
+    const direct = await admin().from("conversation_questions").insert({ conversation_id: conv, seq: 99, phase: "opening", question_text: "dup", choices: ["a", "b", "c"], source: "bank" });
+    expect(direct.error?.code).toBe("23505");
+  });
+});
+
 describe("stats and badges", () => {
   it("counts people/conversations only after a revealed question; peers see tiers only; third parties see nothing", async () => {
     const a = await user("st-a", LEFT);
