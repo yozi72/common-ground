@@ -19,7 +19,7 @@ Short status for anyone reviewing this codebase (including an AI reviewer). Upda
 - Leave / block / report; partner-away notice (≤2 min); abandonment; reflection; mutual-consent "Friends" with reconnection under the same aliases; account + data deletion; retention purge.
 - Profile stats (people talked with, conversations, mutual friends) and 13 participation badges; the other participant sees only coarse tiers (`peer_badges`), never exact counts.
 - Admin review console at `/admin` for the `ADMIN_EMAIL` account (held messages, reports, appeals, policy knobs).
-- 34 integration tests against a local Supabase (`npm test`), lint, typecheck, production build.
+- 39 tests (35 integration against a local Supabase + 4 unit)  (`npm test`), lint, typecheck, production build.
 
 ## Unfinished, mocked, or known issues
 
@@ -64,13 +64,15 @@ All nine findings were confirmed and fixed in `2c165c7` (migration `0004_review_
 | 4 | Retention left `question_answers.custom_text` | `purge_retention` nulls custom text with the message purge | rv4 |
 | 5 | Ownership checks against NULL `my_participant_id` never raised | `owned_pending()` resolves the caller's participant and raises 42501 for outsiders; used by cancel / accept_revision / appeal | rv5 |
 | 6 | Two open questions possible under overlapping workers | `insert_question` locks the conversation and rechecks; partial unique index on `(conversation_id) where status='open'`; existing duplicates closed | rv6 |
-| 7 | Unvalidated `next` redirect in the auth callback | only same-site paths accepted | — (code) |
+| 7 | Unvalidated `next` redirect in the auth callback | `src/lib/safe-next.ts`: resolves against the site origin and rejects anything whose resolved origin differs, including normalization tricks like `/a/..//example.org` | `tests/safe-next.test.ts` |
 | 8 | "Email me" promised but no sender | notices send via SMTP (or Resend); option hidden when no sender; delivery tested | — (manual) |
-| 9 | Friends list copied props into state | rendered from props; local overrides only for just-sent invitations | — (code) |
+| 9 | Friends list copied props into state | rendered from server props only; after inviting, `router.refresh()` in a transition; `my_connections` reports a pending invitation only while valid, so expired/declined ones clear | pilot test "reconnect invitation state follows the server" |
 
 **Live two-user test on the deployed app (2026-10-20, after `2c165c7`):** user A in a browser, user B via `scripts/qa-partner.mjs` against the hosted project. Observed: match formed; B accepted first and the conversation did *not* open until A accepted (fix 2); AI-generated question 1; A's custom answer with a phone number was held by the real model with an explanation and a rewording; accepting it delivered the reworded text and revealed both answers; question 2 generated; leave → reflection; both said yes → "You both said yes" and the partner listed under Friends. Test accounts were deleted afterwards.
 
 ## Change log
+
+- 2026-10-20 — Re-review follow-ups: `safeNext` now validates the resolved origin (fixes `/a/..//example.org` bypass) with unit tests; Friends list has no client-side override and reflects server state after expiry/decline (DB test). 39 tests.
 
 - 2026-10-20 — Review fixes 1–9 (see table above); 34 tests; SMTP notices; `scripts/test-login-link.mjs` harness for signing a test account into any environment.
 

@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 
@@ -7,10 +7,11 @@ type Conn = { connection_id: string; peer_alias: string; my_alias: string; since
 
 export function Connections({ initial }: { initial: Conn[] }) {
   const router = useRouter();
-  // Rendered from props so router.refresh() always shows fresh data; only the
-  // just-sent invitation ids are kept locally until the next refresh.
-  const [sentInvites, setSentInvites] = useState<Record<string, string>>({});
-  const list = initial.map((c) => (sentInvites[c.connection_id] ? { ...c, pending_invitation_id: sentInvites[c.connection_id] } : c));
+  // Rendered straight from server props: after an invite we refresh the server
+  // data (which reports a pending invitation only while it is still valid),
+  // so expired or declined invitations never linger in the UI.
+  const list = initial;
+  const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
 
@@ -20,8 +21,7 @@ export function Connections({ initial }: { initial: Conn[] }) {
     const json = await res.json().catch(() => ({}));
     setBusy(null);
     if (!res.ok) { setError(json.error ?? "Something went wrong"); return; }
-    setSentInvites((m) => ({ ...m, [id]: json.invitation_id }));
-    router.refresh();
+    startTransition(() => router.refresh());
   }
 
   return (
@@ -42,12 +42,12 @@ export function Connections({ initial }: { initial: Conn[] }) {
             {c.status === "active" && (c.pending_invitation_id ? (
               <span className="muted text-sm">Invitation sent. <Link className="underline" href="/lobby">Check Talk</Link></span>
             ) : (
-              <button className="btn btn-primary" disabled={busy === c.connection_id} onClick={() => reconnect(c.connection_id)}>Invite to talk again</button>
+              <button className="btn btn-primary" disabled={busy === c.connection_id || pending} onClick={() => reconnect(c.connection_id)}>{busy === c.connection_id || pending ? "Sending…" : "Invite to talk again"}</button>
             ))}
           </li>
         ))}
       </ul>
-      <button className="btn btn-ghost" onClick={() => router.refresh()}>Refresh</button>
+      <button className="btn btn-ghost" disabled={pending} onClick={() => startTransition(() => router.refresh())}>{pending ? "Refreshing…" : "Refresh"}</button>
     </div>
   );
 }

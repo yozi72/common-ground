@@ -2,12 +2,7 @@ import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { env } from "@/lib/env";
-
-// Only same-site paths may be used as a post-login destination.
-function safeNext(v: string | null): string {
-  if (!v || !v.startsWith("/") || v.startsWith("//") || v.startsWith("/\\")) return "/lobby";
-  try { return new URL(v, "http://x").pathname + new URL(v, "http://x").search; } catch { return "/lobby"; }
-}
+import { safeNext } from "@/lib/safe-next";
 
 // Magic-link landing. Exchanges the code for a session, promotes the configured
 // admin email on first sign-in, and sends new users to onboarding.
@@ -16,7 +11,7 @@ export async function GET(req: Request) {
   const code = url.searchParams.get("code");
   const tokenHash = url.searchParams.get("token_hash");
   const type = url.searchParams.get("type");
-  const next = safeNext(url.searchParams.get("next"));
+  const next = safeNext(url.searchParams.get("next"), env.siteUrl());
   const supabase = await createSupabaseServerClient();
 
   let userId: string | null = null;

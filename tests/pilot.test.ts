@@ -430,6 +430,36 @@ describe("reflection and reconnection", () => {
     expect(c!.connection_id).toBe(conns![0].connection_id);
   });
 
+  it("reconnect invitation state follows the server: pending → expired/declined → can invite again", async () => {
+    const a = await user("ri-a", LEFT);
+    const b = await user("ri-b", RIGHT);
+    const conv = await openConversation(a, b);
+    await a.client.rpc("leave_conversation", { p_conversation: conv });
+    await a.client.rpc("set_connection_decision", { p_conversation: conv, p_decision: true });
+    await b.client.rpc("set_connection_decision", { p_conversation: conv, p_decision: true });
+    const { data: c0 } = await a.client.rpc("my_connections");
+    const connId = c0![0].connection_id as string;
+    // send
+    const { data: inv1 } = await a.client.rpc("request_reconnection", { p_connection: connId });
+    let { data: c1 } = await a.client.rpc("my_connections");
+    expect(c1![0].pending_invitation_id).toBe(inv1);
+    // expire → the Friends list (server data) no longer reports it
+    await admin().from("match_invitations").update({ expires_at: new Date(Date.now() - 1000).toISOString() }).eq("id", inv1);
+    ({ data: c1 } = await a.client.rpc("my_connections"));
+    expect(c1![0].pending_invitation_id).toBeNull();
+    await admin().rpc("expire_stale");
+    // invite again, then the other side declines → cleared again
+    const { data: inv2 } = await a.client.rpc("request_reconnection", { p_connection: connId });
+    expect(inv2).not.toBe(inv1);
+    await b.client.rpc("respond_invitation", { p_invitation: inv2, p_accept: false });
+    const { data: c2 } = await a.client.rpc("my_connections");
+    expect(c2![0].pending_invitation_id).toBeNull();
+    // and a third invitation is accepted
+    const { data: inv3 } = await a.client.rpc("request_reconnection", { p_connection: connId });
+    const { data: r } = await b.client.rpc("respond_invitation", { p_invitation: inv3, p_accept: true });
+    expect(r.status).toBe("opened");
+  });
+
   it("friendship can be disabled by policy", async () => {
     const a = await user("f-a", LEFT);
     const b = await user("f-b", RIGHT);
