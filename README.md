@@ -79,6 +79,16 @@ Two-browser QA checklist (repeatable): sign in as two emails in two browser prof
 
 ## Deployment
 
+### Current hosted pilot (set up 2026-10-20)
+
+- App: https://common-ground-dusky-nine.vercel.app (Vercel project `common-ground`, free plan, deployed from this folder with `npx vercel deploy --prod`)
+- Database/auth: Supabase project `common-ground` (ref `nrhduxkatknackelzbmv`, us-east-1). Migrations applied with `npx supabase db push`; auth site URL and redirect URLs pushed with `npx supabase config push`.
+- Environment: all variables from `.env.example` are set on Vercel (production). The worker secret is kept locally in `.vercel/cron-secret.local` (git-ignored).
+- Worker: Vercel free plan allows one scheduled run per day, used for the nightly retention purge. Minute-level housekeeping runs opportunistically from user activity (heartbeats, lobby polling, queue joins). For quiet hours, point any external pinger (e.g. cron-job.org) at `POST https://common-ground-dusky-nine.vercel.app/api/cron/tick` every minute with header `Authorization: Bearer <CRON_SECRET>`.
+- Email: Supabase's built-in mailer is used for magic links. It only delivers to members of the Supabase organization until custom SMTP is configured, so real participants need step 3 below (a verified sending domain).
+
+### From scratch
+
 1. Create a Supabase project. Run `npx supabase link --project-ref <ref>` then `npx supabase db push`.
 2. In Supabase Auth settings: enable email (magic link), set Site URL to your domain, add `https://<domain>/auth/callback` to redirect URLs, and configure SMTP (the default sender is rate-limited to a handful of emails per hour).
 3. Deploy the Next.js app (Vercel or any Node host). Set the env vars from `.env.example`. Use a strong `CRON_SECRET`.
