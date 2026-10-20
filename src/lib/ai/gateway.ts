@@ -13,7 +13,9 @@ import { runDetectors, DETECTOR_EXPLANATIONS, hitsAreIdentifying, type DetectorH
 import { pickFromBank } from "./questionBank";
 
 export class GatewayError extends Error {
-  constructor(message: string, public readonly retryable = true) { super(message); }
+  // retryable: transient (network, 5xx, bad JSON) → keep pending and retry.
+  // refusal: the model's safety layer declined to assess → hold for a human instead of retrying.
+  constructor(message: string, public readonly retryable = true, public readonly refusal = false) { super(message); }
 }
 
 export type ModerationResult = ModerationDecision & {
@@ -180,22 +182,33 @@ let anthropic: Anthropic | null = null;
 async function callAnthropic(system: string, user: string, maxTokens: number): Promise<string> {
   const key = env.anthropicApiKey();
   if (!key) throw new GatewayError("ANTHROPIC_API_KEY not configured", false);
-  anthropic ??= new Anthropic({ apiKey: key, maxRetries: 2, timeout: 20_000 });
+  anthropic ??= new Anthropic({ apiKey: key, maxRetries: 2, timeout: 30_000 });
   try {
-    const res = await anthropic.messages.create({
+    // Thinking is always on for current models; `effort: "low"` keeps these short
+    // classification calls fast. Thinking tokens count toward max_tokens, hence the headroom.
+    const res = await anthropic.beta.messages.create({
       model: env.anthropicModel(),
-      max_tokens: maxTokens,
-      temperature: 0.2,
-      system,
+      max_tokens: Math.max(maxTokens, 4000),
+      output_config: { effort: "low" },
+      betas: ["server-side-fallback-2026-07-01"],
+      fallbacks: "default",
+      system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],
       messages: [{ role: "user", content: user }],
     });
+    if (res.stop_reason === "refusal") {
+      throw new GatewayError(`model declined to assess (${res.stop_details?.category ?? "unspecified"})`, false, true);
+    }
+    if (res.stop_reason === "max_tokens") throw new GatewayError("model output truncated");
     const text = res.content.find((c) => c.type === "text");
     if (!text || text.type !== "text") throw new GatewayError("empty model response");
     return text.text;
   } catch (e) {
     if (e instanceof GatewayError) throw e;
-    const status = (e as { status?: number }).status;
-    throw new GatewayError(`anthropic error${status ? ` ${status}` : ""}: ${(e as Error).message}`, status !== 400 && status !== 401);
+    if (e instanceof Anthropic.AuthenticationError || e instanceof Anthropic.BadRequestError) {
+      throw new GatewayError(`anthropic ${e.status}: ${e.message}`, false);
+    }
+    if (e instanceof Anthropic.APIError) throw new GatewayError(`anthropic ${e.status ?? "network"}: ${e.message}`, true);
+    throw new GatewayError(`anthropic: ${(e as Error).message}`, true);
   }
 }
 

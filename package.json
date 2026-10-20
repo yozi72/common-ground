@@ -13,7 +13,8 @@
     "db:stop": "supabase stop",
     "db:reset": "supabase db reset",
     "db:status": "supabase status",
-    "typecheck": "tsc --noEmit -p ."
+    "typecheck": "tsc --noEmit -p .",
+    "probe": "vitest run --config vitest.probe.config.ts --reporter=basic"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.135.0",

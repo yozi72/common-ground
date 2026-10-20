@@ -16,7 +16,7 @@ export const env = {
   cronSecret: () => process.env.CRON_SECRET ?? null,
   aiProvider: () => (process.env.AI_PROVIDER === "anthropic" ? "anthropic" : "mock") as "anthropic" | "mock",
   anthropicApiKey: () => process.env.ANTHROPIC_API_KEY ?? null,
-  anthropicModel: () => process.env.ANTHROPIC_MODEL ?? "claude-sonnet-5-5",
+  anthropicModel: () => process.env.ANTHROPIC_MODEL ?? "claude-opus-5-5",
   resendApiKey: () => process.env.RESEND_API_KEY ?? null,
   emailFrom: () => process.env.EMAIL_FROM ?? "Common Ground <noreply@example.com>",
   isProduction: () => process.env.NODE_ENV === "production",

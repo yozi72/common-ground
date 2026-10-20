@@ -87,6 +87,16 @@ async function processOne(row: PendingRow): Promise<boolean> {
     return true;
   } catch (e) {
     const msg = e instanceof GatewayError ? e.message : `worker: ${(e as Error).message}`;
+    if (e instanceof GatewayError && e.refusal) {
+      // The model would not assess this content at all. Retrying won't change that: hold it for a person.
+      console.warn(`[moderation] holding ${row.id} for review: ${msg}`);
+      await admin.rpc("apply_moderation_decision", {
+        p_pending: row.id, p_decision: "review", p_categories: ["model_refusal"],
+        p_user_explanation: "Automated review couldn't assess this message, so it's held for a human reviewer.",
+        p_suggested_revision: null, p_confidence: 0, p_detector_hits: [], p_provider: "anthropic", p_model: null, p_raw_valid: false, p_latency_ms: null,
+      });
+      return false;
+    }
     console.warn(`[moderation] deferring ${row.id}: ${msg}`);
     await admin.rpc("defer_pending", { p_pending: row.id, p_error: msg, p_max_attempts: 6 });
     return false;
