@@ -19,14 +19,15 @@ Short status for anyone reviewing this codebase (including an AI reviewer). Upda
 - Leave / block / report; partner-away notice (≤2 min); abandonment; reflection; mutual-consent "Friends" with reconnection under the same aliases; account + data deletion; retention purge.
 - Profile stats (people talked with, conversations, mutual friends) and 13 participation badges; the other participant sees only coarse tiers (`peer_badges`), never exact counts.
 - Admin review console at `/admin` for the `ADMIN_EMAIL` account (held messages, reports, appeals, policy knobs).
-- 27 integration tests against a local Supabase (`npm test`), lint, typecheck, production build.
+- 34 integration tests against a local Supabase (`npm test`), lint, typecheck, production build.
 
 ## Unfinished, mocked, or known issues
 
-- **Email sender:** Gmail SMTP (app password) for sign-in links; capped ~500/day, "from" is a personal address. Match-ready / reconnect notices are written to `email_outbox` but only sent if `RESEND_API_KEY` is set (currently not) — otherwise marked `skipped`. A sending domain + Resend is the planned replacement.
+- **Email sender:** Gmail SMTP (app password) for sign-in links and now also for match-ready / reconnect notices (nodemailer; a test notice was delivered 2026-10-20). Capped ~500/day, "from" is a personal address. The lobby only offers the email option when a sender is configured. A sending domain + Resend is the planned replacement.
 - **Worker scheduling:** Vercel free plan runs cron once a day (used for retention). Housekeeping otherwise runs opportunistically from user activity (heartbeat/lobby/queue). Partner-away and abandonment timing is therefore only reliable while someone is active; an external minute-level pinger (`POST /api/cron/tick`, bearer `CRON_SECRET`) is recommended for quiet hours.
 - **Browser push notifications:** not built. In-app + optional email only.
 - **Contact sharing:** disabled by policy; no code path.
+- **Realtime in production:** lobby and conversation screens poll (10 s / 5 s) and also subscribe to Supabase Realtime; the subscription has not been separately verified on the hosted project (polling covers it). Background/hidden tabs are throttled by browsers, so a tab left in the background may update slowly until it is focused.
 - **Question-after-reveal latency:** 3–10 s in dev (server `after()` hook + 5 s polling fallback); realtime should be faster in production but hasn't been measured there.
 - **Design:** the warm/rounded light theme now covers every screen (landing, sign-in, onboarding, Talk, conversation, reflection, Friends, Profile, Review). Screenshots in `docs/screenshots/`. Dark theme exists but is untested after the redesign.
 - **Questionnaire wording and the 15-question fallback bank** are first drafts (`src/lib/political.ts`, `src/lib/ai/questionBank.ts`).
@@ -51,7 +52,27 @@ Prerequisite: two email addresses you can read. Use two browsers or one normal +
 
 Local alternative without a second person: `node scripts/qa-partner.mjs` (with `.env.local` exported) plays the other side against a local Supabase. It is a test harness only, never a product feature.
 
+## External review (ChatGPT, commit ae6735b) — status
+
+All nine findings were confirmed and fixed in `2c165c7` (migration `0004_review_fixes.sql`, applied locally and on the hosted project). Each database finding has a regression test in `tests/pilot.test.ts` ("review regressions").
+
+| # | Finding | Fix | Test |
+|---|---|---|---|
+| 1 | Clients could UPDATE their own `participants` row (incl. `conversation_id`) | UPDATE policy dropped; UPDATE/INSERT/DELETE revoked from `authenticated`; heartbeat stays an RPC | rv1 |
+| 2 | `bool_and` ignored NULL decisions → one acceptance opened the conversation | `respond_invitation` requires `count(accepted) = count(participants) >= 2` | rv2 (+ live test) |
+| 3 | Approved custom answers readable by the peer before reveal | `approved_messages` SELECT policy: answers visible to sender, or once the question is revealed; Realtime follows RLS | rv3 |
+| 4 | Retention left `question_answers.custom_text` | `purge_retention` nulls custom text with the message purge | rv4 |
+| 5 | Ownership checks against NULL `my_participant_id` never raised | `owned_pending()` resolves the caller's participant and raises 42501 for outsiders; used by cancel / accept_revision / appeal | rv5 |
+| 6 | Two open questions possible under overlapping workers | `insert_question` locks the conversation and rechecks; partial unique index on `(conversation_id) where status='open'`; existing duplicates closed | rv6 |
+| 7 | Unvalidated `next` redirect in the auth callback | only same-site paths accepted | — (code) |
+| 8 | "Email me" promised but no sender | notices send via SMTP (or Resend); option hidden when no sender; delivery tested | — (manual) |
+| 9 | Friends list copied props into state | rendered from props; local overrides only for just-sent invitations | — (code) |
+
+**Live two-user test on the deployed app (2026-10-20, after `2c165c7`):** user A in a browser, user B via `scripts/qa-partner.mjs` against the hosted project. Observed: match formed; B accepted first and the conversation did *not* open until A accepted (fix 2); AI-generated question 1; A's custom answer with a phone number was held by the real model with an explanation and a rewording; accepting it delivered the reworded text and revealed both answers; question 2 generated; leave → reflection; both said yes → "You both said yes" and the partner listed under Friends. Test accounts were deleted afterwards.
+
 ## Change log
+
+- 2026-10-20 — Review fixes 1–9 (see table above); 34 tests; SMTP notices; `scripts/test-login-link.mjs` harness for signing a test account into any environment.
 
 - 2026-10-20 — Stats and badges: `account_stats`/`my_stats`/`peer_badges` functions (migration 0003, applied locally and on the hosted project), Profile page with counts, next-milestone line and badge grid, peer tier badges under the alias in the conversation header. Per-task model overrides `ANTHROPIC_MODEL_MODERATION` / `ANTHROPIC_MODEL_QUESTIONS`. 28 tests.
 
