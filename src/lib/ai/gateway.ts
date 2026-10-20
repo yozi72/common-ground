@@ -1,0 +1,208 @@
+// Server-side model gateway. The only place that talks to a model provider.
+// Credentials never leave the server; outputs are validated against strict
+// schemas; failures throw so callers keep messages pending (never pass).
+import "server-only";
+import Anthropic from "@anthropic-ai/sdk";
+import { env } from "@/lib/env";
+import {
+  ModerationDecisionSchema, GeneratedQuestionSchema, ConnectionReadinessSchema,
+  type ModerationDecision, type ModerationInput, type GeneratedQuestion, type QuestionInput, type ConnectionReadiness,
+} from "./schemas";
+import { MODERATION_SYSTEM, QUESTION_SYSTEM, CONNECTION_SYSTEM, wrapUntrusted } from "./prompts";
+import { runDetectors, DETECTOR_EXPLANATIONS, hitsAreIdentifying, type DetectorHit } from "./detectors";
+import { pickFromBank } from "./questionBank";
+
+export class GatewayError extends Error {
+  constructor(message: string, public readonly retryable = true) { super(message); }
+}
+
+export type ModerationResult = ModerationDecision & {
+  provider: "anthropic" | "mock";
+  model: string | null;
+  detectorHits: DetectorHit[];
+  rawValid: boolean;
+  latencyMs: number;
+};
+
+export type QuestionResult = GeneratedQuestion & { source: "ai" | "bank"; provider: "anthropic" | "mock" };
+
+export function providerInfo() {
+  const provider = env.aiProvider();
+  const configured = provider === "anthropic" && !!env.anthropicApiKey();
+  return { provider, configured, model: provider === "anthropic" ? env.anthropicModel() : null };
+}
+
+// ---------------------------------------------------------------------------
+// Moderation
+// ---------------------------------------------------------------------------
+
+export async function moderate(input: ModerationInput): Promise<ModerationResult> {
+  const started = Date.now();
+  const hits = input.detectorHits.length
+    ? (input.detectorHits as DetectorHit[])
+    : runDetectors(input.body, input.recent.filter((r) => r.fromSender).map((r) => r.body));
+  const { provider } = providerInfo();
+
+  if (provider === "mock") {
+    return { ...mockModerate(input, hits), provider: "mock", model: null, detectorHits: hits, rawValid: true, latencyMs: Date.now() - started };
+  }
+
+  const userPrompt = [
+    `Message kind: ${input.kind}`,
+    `Detector hits: ${hits.length ? hits.join(", ") : "none"}`,
+    wrapUntrusted("recent_context", input.recent.map((r) => `${r.fromSender ? "SENDER" : "OTHER"}: ${r.body}`).join("\n") || "(none)"),
+    wrapUntrusted("pending_message", input.body),
+  ].join("\n\n");
+
+  const raw = await callAnthropic(MODERATION_SYSTEM, userPrompt, 600);
+  const parsed = ModerationDecisionSchema.safeParse(extractJson(raw));
+  if (!parsed.success) {
+    // Invalid model output is a service failure: fail into pending/retry, never allow.
+    throw new GatewayError("moderation output failed validation");
+  }
+  const d = parsed.data;
+  // Detectors are a floor: an identifying hit can never be silently allowed.
+  if (d.decision === "allow" && hitsAreIdentifying(hits)) {
+    return {
+      ...d, decision: "revise",
+      categories: [...new Set([...d.categories, "identifying_details"])],
+      user_explanation: d.user_explanation ?? hits.map((h) => DETECTOR_EXPLANATIONS[h]).join(" "),
+      suggested_revision: d.suggested_revision ?? null,
+      provider: "anthropic", model: env.anthropicModel(), detectorHits: hits, rawValid: true, latencyMs: Date.now() - started,
+    };
+  }
+  return { ...d, provider: "anthropic", model: env.anthropicModel(), detectorHits: hits, rawValid: true, latencyMs: Date.now() - started };
+}
+
+// The mock never pretends to be a model. It applies the deterministic detectors
+// and a tiny abuse list; everything else is allowed in development. In
+// production it refuses to allow chat (review) unless explicitly permitted.
+function mockModerate(input: ModerationInput, hits: DetectorHit[]): ModerationDecision {
+  if (env.isProduction() && !env.mockAllowedInProduction()) {
+    return { decision: "review", categories: ["mock_provider"], user_explanation: "Automated review is not configured; this message is held for a human.", suggested_revision: null, confidence: 0 };
+  }
+  if (hitsAreIdentifying(hits)) {
+    return {
+      decision: "revise",
+      categories: ["identifying_details", ...hits],
+      user_explanation: hits.map((h) => DETECTOR_EXPLANATIONS[h]).join(" "),
+      suggested_revision: redact(input.body),
+      confidence: 0.6,
+    };
+  }
+  if (/\b(kill yourself|i will find you|i'll find you|you people are (?:animals|vermin|subhuman))\b/i.test(input.body)) {
+    return { decision: "block", categories: ["threat_or_dehumanization"], user_explanation: "This reads as a threat or dehumanizing language, which can't be delivered. You can say how you feel without directing it at the other person.", suggested_revision: null, confidence: 0.7 };
+  }
+  if (hits.includes("platform_mention")) {
+    return { decision: "revise", categories: ["platform_mention"], user_explanation: DETECTOR_EXPLANATIONS.platform_mention, suggested_revision: redact(input.body), confidence: 0.5 };
+  }
+  return { decision: "allow", categories: [], user_explanation: null, suggested_revision: null, confidence: 0.5 };
+}
+
+function redact(body: string) {
+  return body
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[email removed]")
+    .replace(/(?:\+?1[\s.-]?)?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}\b/g, "[number removed]")
+    .replace(/\b(?:https?:\/\/|www\.)\S+/gi, "[link removed]")
+    .replace(/(^|\s)@[a-z0-9_.]{3,}/gi, "$1[handle removed]")
+    .replace(/\b(?:instagram|insta|snapchat|tiktok|twitter|facebook|telegram|signal|whatsapp|discord|linkedin|venmo|cashapp)\b/gi, "[platform]");
+}
+
+// ---------------------------------------------------------------------------
+// Questions
+// ---------------------------------------------------------------------------
+
+export async function generateQuestion(input: QuestionInput): Promise<QuestionResult> {
+  const { provider } = providerInfo();
+  if (provider === "mock") {
+    return { ...pickFromBank(input.previousQuestions, input.skippedQuestions), source: "bank", provider: "mock" };
+  }
+  const userPrompt = [
+    `Stage: ${input.phase} question #${input.seq}${input.phase === "opening" ? " of the opening round (gentle early, deeper later)" : " (mid-conversation; may reference the recent exchange)"}`,
+    input.sharedContext
+      ? wrapUntrusted("coarse_context_both_consented", input.sharedContext.map((c, i) => `Person ${i + 1}: ${c.lifeContext.join(", ") || "none"}`).join("\n"))
+      : "Coarse context: not shared.",
+    wrapUntrusted("previous_questions", input.previousQuestions.join("\n") || "(none)"),
+    wrapUntrusted("skipped_questions", input.skippedQuestions.join("\n") || "(none)"),
+    wrapUntrusted("recent_conversation", input.recent.map((r) => `${r.alias}: ${r.body}`).join("\n") || "(none yet)"),
+  ].join("\n\n");
+
+  try {
+    const raw = await callAnthropic(QUESTION_SYSTEM, userPrompt, 500);
+    const parsed = GeneratedQuestionSchema.safeParse(extractJson(raw));
+    if (parsed.success && choicesLookSafe(parsed.data.choices) && !input.previousQuestions.includes(parsed.data.shared_question)) {
+      return { ...parsed.data, source: "ai", provider: "anthropic" };
+    }
+  } catch (e) {
+    console.warn("[gateway] question generation failed, using bank:", (e as Error).message);
+  }
+  return { ...pickFromBank(input.previousQuestions, input.skippedQuestions), source: "bank", provider: "anthropic" };
+}
+
+// Server-side sanity check on generated choices: reject loaded/political options.
+const LOADED = /\b(democrat|republican|liberal|conservative|trump|biden|maga|woke|libtard|snowflake|fascist|socialist|communist|immigrant|abortion|gun)\w*/i;
+function choicesLookSafe(choices: string[]) {
+  const distinct = new Set(choices.map((c) => c.trim().toLowerCase())).size === 3;
+  return distinct && !choices.some((c) => LOADED.test(c));
+}
+
+// ---------------------------------------------------------------------------
+// Connection readiness (policy check only; never a trust score)
+// ---------------------------------------------------------------------------
+
+export async function assessConnectionReadiness(input: {
+  policyVersion: string; bothParticipated: boolean; bothConsented: boolean;
+  blocked: boolean; openReports: number; conversationEnded: boolean;
+}): Promise<ConnectionReadiness> {
+  // The deterministic policy is authoritative; a model may only add flags for review.
+  const reasons: string[] = [];
+  if (!input.conversationEnded) reasons.push("conversation not finished");
+  if (!input.bothParticipated) reasons.push("both people must have taken part");
+  if (input.blocked) reasons.push("a block exists between these people");
+  if (input.openReports > 0) reasons.push("an open report involves this conversation");
+  const eligible = reasons.length === 0;
+  const base: ConnectionReadiness = { eligible_for_invitation: eligible, policy_reasons: eligible ? [`policy ${input.policyVersion}: mutual opt-in, no time gate`] : reasons, unresolved_flags: [] };
+  if (providerInfo().provider === "mock" || !eligible) return base;
+  try {
+    const raw = await callAnthropic(CONNECTION_SYSTEM, JSON.stringify(input), 300);
+    const parsed = ConnectionReadinessSchema.safeParse(extractJson(raw));
+    if (parsed.success) return { ...base, unresolved_flags: parsed.data.unresolved_flags };
+  } catch { /* policy result stands */ }
+  return base;
+}
+
+// ---------------------------------------------------------------------------
+// Provider plumbing
+// ---------------------------------------------------------------------------
+
+let anthropic: Anthropic | null = null;
+
+async function callAnthropic(system: string, user: string, maxTokens: number): Promise<string> {
+  const key = env.anthropicApiKey();
+  if (!key) throw new GatewayError("ANTHROPIC_API_KEY not configured", false);
+  anthropic ??= new Anthropic({ apiKey: key, maxRetries: 2, timeout: 20_000 });
+  try {
+    const res = await anthropic.messages.create({
+      model: env.anthropicModel(),
+      max_tokens: maxTokens,
+      temperature: 0.2,
+      system,
+      messages: [{ role: "user", content: user }],
+    });
+    const text = res.content.find((c) => c.type === "text");
+    if (!text || text.type !== "text") throw new GatewayError("empty model response");
+    return text.text;
+  } catch (e) {
+    if (e instanceof GatewayError) throw e;
+    const status = (e as { status?: number }).status;
+    throw new GatewayError(`anthropic error${status ? ` ${status}` : ""}: ${(e as Error).message}`, status !== 400 && status !== 401);
+  }
+}
+
+function extractJson(raw: string): unknown {
+  const trimmed = raw.trim().replace(/^```(?:json)?\s*/i, "").replace(/```$/, "");
+  const start = trimmed.indexOf("{");
+  const end = trimmed.lastIndexOf("}");
+  if (start < 0 || end < 0) return null;
+  try { return JSON.parse(trimmed.slice(start, end + 1)); } catch { return null; }
+}

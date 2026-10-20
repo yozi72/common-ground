@@ -1,0 +1,81 @@
+@import "tailwindcss";
+
+:root {
+  --bg: #faf8f4;
+  --fg: #1f1d1a;
+  --muted: #6b665e;
+  --card: #ffffff;
+  --line: #e6e1d8;
+  --accent: #2f5d50;
+  --accent-fg: #ffffff;
+  --warn-bg: #fff6e5;
+  --warn-fg: #7a4b00;
+  --bad-bg: #fdecec;
+  --bad-fg: #8a1f1f;
+  --ok-bg: #e9f5ef;
+  --ok-fg: #1f5e42;
+  --mine: #e4efe9;
+  --theirs: #f1ede6;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #15140f;
+    --fg: #ece8e0;
+    --muted: #a39d93;
+    --card: #1f1d18;
+    --line: #35322b;
+    --accent: #7fb8a3;
+    --accent-fg: #0f1a16;
+    --warn-bg: #3a2c10;
+    --warn-fg: #f3c777;
+    --bad-bg: #3d1c1c;
+    --bad-fg: #f1a3a3;
+    --ok-bg: #16302a;
+    --ok-fg: #9edbbf;
+    --mine: #23362f;
+    --theirs: #2a2721;
+  }
+}
+
+html { color-scheme: light dark; }
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+a { text-underline-offset: 3px; }
+:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+
+.btn {
+  @apply inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium transition disabled:opacity-50 disabled:cursor-not-allowed;
+  min-height: 44px;
+}
+.btn-primary { background: var(--accent); color: var(--accent-fg); }
+.btn-primary:hover:not(:disabled) { filter: brightness(1.08); }
+.btn-secondary { background: var(--card); color: var(--fg); border: 1px solid var(--line); }
+.btn-secondary:hover:not(:disabled) { border-color: var(--accent); }
+.btn-danger { background: var(--bad-bg); color: var(--bad-fg); border: 1px solid transparent; }
+.btn-ghost { background: transparent; color: var(--muted); }
+
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 1.25rem; }
+.muted { color: var(--muted); }
+.notice { border-radius: 10px; padding: 0.75rem 1rem; font-size: 0.9rem; }
+.notice-warn { background: var(--warn-bg); color: var(--warn-fg); }
+.notice-bad { background: var(--bad-bg); color: var(--bad-fg); }
+.notice-ok { background: var(--ok-bg); color: var(--ok-fg); }
+
+.field { @apply w-full rounded-lg px-3 py-2.5 text-base; background: var(--card); color: var(--fg); border: 1px solid var(--line); min-height: 44px; }
+.field:focus { border-color: var(--accent); outline: none; box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent); }
+
+.skip-link { position: absolute; left: -999px; top: 8px; z-index: 50; }
+.skip-link:focus { left: 8px; background: var(--card); padding: 8px 12px; border-radius: 8px; }
+
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+}
