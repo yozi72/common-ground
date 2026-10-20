@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabaseBrowser } from "@/lib/supabase/client";
+import { TwoCups } from "@/components/Illustrations";
 
 type Conv = { id: string; status: "opening" | "chatting" | "ended"; opening_question_count: number; questions_asked: number; end_reason: string | null };
 type Question = { id: string; seq: number; phase: "opening" | "mid"; question_text: string; choices: string[]; status: "open" | "revealed" | "closed"; created_at: string; revealed_at: string | null };
@@ -103,10 +104,16 @@ export function Conversation({ conversationId, myParticipantId, myAlias, peerAli
 
   return (
     <div className="flex flex-col gap-4 min-h-[70dvh]">
-      <header className="flex items-center justify-between gap-2">
-        <div>
-          <h1 className="text-xl font-semibold">Talking with {peerAlias}</h1>
-          <p className="muted text-xs">You're {myAlias}. {conv.status === "opening" ? `Opening question ${Math.min(conv.questions_asked, conv.opening_question_count)} of ${conv.opening_question_count}` : "Open conversation"}</p>
+      <header className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="flex -space-x-2">
+            <Avatar alias={myAlias} />
+            <Avatar alias={peerAlias} />
+          </div>
+          <div className="min-w-0">
+            <h1 className="text-xl font-semibold truncate">You &amp; {peerAlias}</h1>
+            <p className="muted text-xs">You're {myAlias}. {conv.status === "opening" ? `Question ${Math.min(conv.questions_asked, conv.opening_question_count)} of ${conv.opening_question_count}` : "Open conversation"}</p>
+          </div>
         </div>
         <div className="relative">
           <button className="btn btn-secondary" aria-haspopup="menu" aria-expanded={menuOpen} onClick={() => setMenuOpen((v) => !v)}>Options</button>
@@ -119,6 +126,15 @@ export function Conversation({ conversationId, myParticipantId, myAlias, peerAli
           )}
         </div>
       </header>
+
+      {conv.status === "opening" && (
+        <div className="progress" role="progressbar" aria-label="Opening questions" aria-valuemin={0} aria-valuemax={conv.opening_question_count} aria-valuenow={Math.max(0, conv.questions_asked - 1)}>
+          <div className="progress-fill" style={{ width: `${Math.round((Math.max(0, conv.questions_asked - 1) / conv.opening_question_count) * 100)}%` }} />
+        </div>
+      )}
+      {conv.status === "chatting" && timeline.length > 0 && !openQuestion && (
+        <p className="text-center text-xs muted">Chat is open. A new shared question will come along now and then.</p>
+      )}
 
       {error && <div className="notice notice-bad" role="alert">{error}</div>}
       {partnerAway && <div className="notice notice-warn" role="status">{peerAlias} hasn't been active for a couple of minutes. They may have stepped away.</div>}
@@ -137,7 +153,19 @@ export function Conversation({ conversationId, myParticipantId, myAlias, peerAli
       {reporting && <ReportForm onClose={() => setReporting(false)} onSubmit={async (b) => { const r = await api(`/api/conversations/${conversationId}`, { action: "report", ...b }); if (r) { setReporting(false); if (b.also_block) router.push(`/c/${conversationId}/reflect`); } }} />}
 
       <section aria-label="Conversation" className="flex-1 space-y-3 pb-4">
-        {timeline.length === 0 && !openQuestion && <p className="muted text-sm">Getting your first question ready…</p>}
+        {timeline.length === 0 && (
+          <div className="text-center py-6 space-y-2">
+            <TwoCups className="w-36 h-auto mx-auto float" />
+            {openQuestion ? (
+              <>
+                <p className="font-semibold">Ten shared questions to start</p>
+                <p className="muted text-sm max-w-sm mx-auto">You both get the same question. Answers stay hidden until you&apos;ve both answered, then appear together here.</p>
+              </>
+            ) : (
+              <p className="muted text-sm">Getting your first question ready…</p>
+            )}
+          </div>
+        )}
         {timeline.map((t) => <div key={t.key}>{t.node}</div>)}
         <div ref={bottomRef} />
       </section>
@@ -165,13 +193,24 @@ export function Conversation({ conversationId, myParticipantId, myAlias, peerAli
 
 function Bubble({ mine, alias, body, at }: { mine: boolean; alias: string; body: string; at: string }) {
   return (
-    <div className={`flex ${mine ? "justify-end" : "justify-start"}`}>
-      <div className="max-w-[85%] px-4 py-2.5" style={{ background: mine ? "var(--mine)" : "var(--theirs)", borderRadius: mine ? "20px 20px 6px 20px" : "20px 20px 20px 6px" }}>
+    <div className={`flex items-end gap-2 ${mine ? "justify-end" : "justify-start"}`}>
+      {!mine && <Avatar alias={alias} small />}
+      <div className="max-w-[80%] px-4 py-2.5" style={{ background: mine ? "var(--mine)" : "var(--theirs)", borderRadius: mine ? "20px 20px 6px 20px" : "20px 20px 20px 6px" }}>
         <div className="text-xs muted mb-0.5">{alias} · {new Date(at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</div>
         <div className="whitespace-pre-wrap break-words">{body}</div>
       </div>
     </div>
   );
+}
+
+// Deterministic warm color per alias; never a political color pair.
+function Avatar({ alias, small = false }: { alias: string; small?: boolean }) {
+  const palettes = ["var(--accent-2)", "var(--sage-2)", "var(--sun-2)", "var(--theirs)", "var(--mine)"];
+  let h = 0;
+  for (const ch of alias) h = (h * 31 + ch.charCodeAt(0)) % 997;
+  const bg = palettes[h % palettes.length];
+  const initials = alias.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase();
+  return <span className={`avatar ${small ? "avatar-sm" : ""}`} style={{ background: bg, border: "2px solid var(--card)" }} aria-hidden="true">{initials}</span>;
 }
 
 function answerText(q: Question, a?: Answer) {
@@ -182,16 +221,21 @@ function answerText(q: Question, a?: Answer) {
 }
 
 function RevealedQuestion({ q, mine, theirs, myAlias, peerAlias }: { q: Question; mine?: Answer; theirs?: Answer; myAlias: string; peerAlias: string }) {
+  const a = answerText(q, mine), b = answerText(q, theirs);
+  const same = mine && theirs && mine.status === "approved" && theirs.status === "approved" && a === b;
   return (
-    <section className="card space-y-2" aria-label={`Question ${q.seq}`}>
-      <p className="text-xs muted">Question {q.seq}</p>
-      <p className="font-medium">{q.question_text}</p>
+    <section className="card-flat space-y-3" aria-label={`Question ${q.seq}`}>
+      <div className="flex items-center justify-between gap-2">
+        <span className="eyebrow">Question {q.seq}</span>
+        {same && <span className="badge">Same answer</span>}
+      </div>
+      <p className="font-semibold">{q.question_text}</p>
       {q.status === "closed" && !q.revealed_at ? (
         <p className="muted text-sm">This one closed before you both answered, so answers stay private.</p>
       ) : (
         <dl className="grid gap-2 sm:grid-cols-2 text-sm">
-          <div className="rounded-lg p-3" style={{ background: "var(--mine)" }}><dt className="text-xs muted">{myAlias}</dt><dd>{answerText(q, mine)}</dd></div>
-          <div className="rounded-lg p-3" style={{ background: "var(--theirs)" }}><dt className="text-xs muted">{peerAlias}</dt><dd>{answerText(q, theirs)}</dd></div>
+          <div className="flex gap-2 items-start rounded-xl p-3" style={{ background: "var(--mine)" }}><Avatar alias={myAlias} small /><div><dt className="text-xs muted">{myAlias}</dt><dd>{a}</dd></div></div>
+          <div className="flex gap-2 items-start rounded-xl p-3" style={{ background: "var(--theirs)" }}><Avatar alias={peerAlias} small /><div><dt className="text-xs muted">{peerAlias}</dt><dd>{b}</dd></div></div>
         </dl>
       )}
     </section>
@@ -207,9 +251,9 @@ function QuestionCard({ q, mine, peerAlias, peerAnswered, pendingAnswer, onChoic
   const answered = mine && (mine.status === "approved" || mine.status === "skipped");
 
   return (
-    <section className="card space-y-3 sticky bottom-2" aria-live="polite" aria-label="Current question" style={{ borderColor: "var(--accent)" }}>
-      <p className="text-xs muted">{q.phase === "opening" ? `Question ${q.seq}` : "A question for both of you"}</p>
-      <p className="font-medium text-lg">{q.question_text}</p>
+    <section className="card space-y-3 sm:sticky sm:bottom-2" aria-live="polite" aria-label="Current question" style={{ borderColor: "var(--accent)" }}>
+      <p className="eyebrow">{q.phase === "opening" ? `Question ${q.seq}` : "A question for both of you"}</p>
+      <p className="font-semibold text-xl">{q.question_text}</p>
       {answered ? (
         <p className="notice notice-ok">Answered. {peerAnswered ? "Revealing…" : `Waiting for ${peerAlias}. You'll both see each other's answers at the same time.`}</p>
       ) : pendingAnswer ? (
@@ -317,15 +361,18 @@ function Composer({ conversationId, pending, onSent, onPendingAction, api, now }
   }
 
   return (
-    <div className="sticky bottom-0 pb-2 space-y-2" style={{ background: "var(--bg)" }}>
+    <div className="sticky bottom-[68px] sm:bottom-0 pb-2 space-y-2" style={{ background: "var(--bg)" }}>
       {pending.map((p) => <PendingItem key={p.id} p={p} now={now} onAction={onPendingAction} />)}
       <form onSubmit={send} className="flex gap-2 items-end">
         <label className="sr-only" htmlFor="composer">Message</label>
-        <textarea id="composer" className="field flex-1" rows={2} maxLength={2000} value={text} onChange={(e) => setText(e.target.value)}
+        <textarea id="composer" className="field flex-1" rows={1} maxLength={2000} value={text} onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); (e.currentTarget.form as HTMLFormElement).requestSubmit(); } }}
-          placeholder="Write a message. It's checked before delivery." />
-        <button className="btn btn-primary" disabled={sending || !text.trim()}>Send</button>
+          placeholder="Write a message…" style={{ borderRadius: 24, resize: "none" }} />
+        <button className="btn btn-primary px-0 w-12 h-12 min-h-0 shrink-0" disabled={sending || !text.trim()} aria-label="Send">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 12h14M12 5l7 7-7 7" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
+        </button>
       </form>
+      <p className="text-center text-[11px] muted">Messages are checked before the other person sees them.</p>
     </div>
   );
 }

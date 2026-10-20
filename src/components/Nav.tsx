@@ -26,10 +26,10 @@ export async function Nav() {
                 <li className="hidden sm:block"><Link className="btn btn-ghost px-3 py-2 min-h-0" href="/lobby">Talk</Link></li>
                 <li className="hidden sm:block"><Link className="btn btn-ghost px-3 py-2 min-h-0" href="/connections">Friends</Link></li>
                 <li className="hidden sm:block"><Link className="btn btn-ghost px-3 py-2 min-h-0" href="/settings">Profile</Link></li>
-                {isAdmin && <li><Link className="btn btn-ghost px-3 py-2 min-h-0" href="/admin">Review</Link></li>}
+                {isAdmin && <li className="hidden sm:block"><Link className="btn btn-ghost px-3 py-2 min-h-0" href="/admin">Review</Link></li>}
                 <li>
                   <form action="/auth/signout" method="post">
-                    <button className="btn btn-secondary px-3 py-1.5 min-h-0 text-sm">Sign out</button>
+                    <button className="btn btn-secondary px-3 py-1.5 min-h-0 text-sm whitespace-nowrap">Sign out</button>
                   </form>
                 </li>
               </>
@@ -39,7 +39,7 @@ export async function Nav() {
           </ul>
         </nav>
       </header>
-      {data.user && <TabBar />}
+      {data.user && <TabBar isAdmin={isAdmin} />}
     </>
   );
 }

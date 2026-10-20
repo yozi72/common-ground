@@ -1,6 +1,7 @@
 "use client";
 import { useState } from "react";
 import Link from "next/link";
+import { Sprout, Bridge } from "@/components/Illustrations";
 
 type Reflection = { felt_understood: number | null; recognized_shared: number | null; would_repeat: boolean | null; free_text: string | null };
 
@@ -37,8 +38,9 @@ export function Reflect({ conversationId, peerAlias, endReason, questionsAsked, 
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold">That conversation has ended</h1>
+      <div className="text-center">
+        <Sprout className="w-40 h-auto mx-auto float" />
+        <h1 className="text-3xl font-semibold">That conversation has ended</h1>
         <p className="muted text-sm mt-1">
           {endReason === "left" && "One of you left."}{endReason === "abandoned" && "One of you was away too long."}{endReason === "blocked" && "It was ended with a block."}{!endReason && "Thanks for taking part."}
           {" "}{questionsAsked > 0 && `You went through ${questionsAsked} question${questionsAsked === 1 ? "" : "s"}.`}
@@ -47,15 +49,15 @@ export function Reflect({ conversationId, peerAlias, endReason, questionsAsked, 
       {error && <div className="notice notice-bad" role="alert">{error}</div>}
 
       <section className="card space-y-4">
-        <h2 className="font-medium">A quick reflection</h2>
+        <h2 className="font-semibold text-xl">A quick reflection</h2>
         <p className="muted text-sm">Only you and the pilot team see this. It's how we learn whether this is worth doing.</p>
         <Scale label="Did you feel understood?" value={understood} onChange={setUnderstood} />
         <Scale label="Did you recognize something of your own experience in theirs?" value={shared} onChange={setShared} />
         <fieldset>
           <legend className="text-sm font-medium mb-2">Would you do this again with someone new?</legend>
           <div className="flex gap-2">
-            <button type="button" className="btn btn-secondary" aria-pressed={repeat === true} style={repeat === true ? { borderColor: "var(--accent)", background: "var(--ok-bg)" } : undefined} onClick={() => setRepeat(true)}>Yes</button>
-            <button type="button" className="btn btn-secondary" aria-pressed={repeat === false} style={repeat === false ? { borderColor: "var(--accent)", background: "var(--ok-bg)" } : undefined} onClick={() => setRepeat(false)}>No</button>
+            <button type="button" className="chip" aria-pressed={repeat === true} onClick={() => setRepeat(true)}>Yes</button>
+            <button type="button" className="chip" aria-pressed={repeat === false} onClick={() => setRepeat(false)}>No</button>
           </div>
         </fieldset>
         <label className="block text-sm font-medium" htmlFor="free">Anything else? (optional)</label>
@@ -65,8 +67,9 @@ export function Reflect({ conversationId, peerAlias, endReason, questionsAsked, 
       </section>
 
       {friendshipEnabled && !blocked && (
-        <section className="card space-y-3">
-          <h2 className="font-medium">Would you talk with {peerAlias} again?</h2>
+        <section className="card space-y-3" style={{ borderColor: "var(--accent)" }}>
+          <Bridge className="w-32 h-auto mx-auto" />
+          <h2 className="font-semibold text-xl text-center">Would you talk with {peerAlias} again?</h2>
           <p className="muted text-sm">Your answer is private. If you both say yes, you'll both see it and can invite each other to another conversation, still under your aliases. If only one of you says yes, neither of you is told.</p>
           {connected ? (
             <div className="notice notice-ok" role="status">You both said yes. You'll find {peerAlias} under <Link className="underline" href="/connections">Friends</Link>.</div>
@@ -94,8 +97,7 @@ function Scale({ label, value, onChange }: { label: string; value: number; onCha
       <legend className="text-sm font-medium mb-2">{label}</legend>
       <div className="grid grid-cols-5 gap-1" role="radiogroup" aria-label={label}>
         {[1, 2, 3, 4, 5].map((n) => (
-          <button type="button" key={n} role="radio" aria-checked={value === n} className="btn btn-secondary px-0"
-            style={value === n ? { borderColor: "var(--accent)", background: "var(--ok-bg)" } : undefined} onClick={() => onChange(n)}>{n}</button>
+          <button type="button" key={n} role="radio" aria-checked={value === n} className="chip justify-center px-0" onClick={() => onChange(n)}>{n}</button>
         ))}
       </div>
       <div className="flex justify-between text-xs muted mt-1"><span>Not at all</span><span>Very much</span></div>

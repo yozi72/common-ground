@@ -129,3 +129,13 @@ a { text-underline-offset: 3px; }
 @media (prefers-reduced-motion: reduce) {
   * { animation: none !important; transition: none !important; }
 }
+
+/* conversation */
+.progress { height: 10px; border-radius: 999px; background: var(--bg-2); overflow: hidden; }
+.progress-fill { height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--sage), var(--accent)); transition: width .4s ease; }
+.avatar { display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 40px; border-radius: 999px; font-weight: 700; font-size: 0.95rem; color: var(--fg); flex-shrink: 0; }
+.avatar-sm { width: 26px; height: 26px; font-size: 0.7rem; }
+.badge { display: inline-flex; align-items: center; gap: 4px; padding: 2px 10px; border-radius: 999px; font-size: 0.72rem; font-weight: 700; background: var(--sage-2); color: var(--ok-fg); }
+.tab { @apply inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold; border-radius: 999px; background: transparent; color: var(--muted); border: 2px solid transparent; }
+.tab[aria-current="page"] { background: var(--card); color: var(--fg); border-color: var(--line); }
+.count { display: inline-flex; min-width: 22px; height: 22px; padding: 0 6px; align-items: center; justify-content: center; border-radius: 999px; background: var(--accent-2); color: var(--fg); font-size: 0.72rem; }

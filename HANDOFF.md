@@ -27,7 +27,7 @@ Short status for anyone reviewing this codebase (including an AI reviewer). Upda
 - **Browser push notifications:** not built. In-app + optional email only.
 - **Contact sharing:** disabled by policy; no code path.
 - **Question-after-reveal latency:** 3–10 s in dev (server `after()` hook + 5 s polling fallback); realtime should be faster in production but hasn't been measured there.
-- **Design:** first pass of the warm/rounded light theme is in (landing, sign-in, onboarding, Talk, Friends, Profile, nav/tab bar). Conversation, reflection and admin screens use the shared components but haven't had a dedicated design pass yet. Dark theme exists but is untested after the redesign.
+- **Design:** the warm/rounded light theme now covers every screen (landing, sign-in, onboarding, Talk, conversation, reflection, Friends, Profile, Review). Screenshots in `docs/screenshots/`. Dark theme exists but is untested after the redesign.
 - **Questionnaire wording and the 15-question fallback bank** are first drafts (`src/lib/political.ts`, `src/lib/ai/questionBank.ts`).
 - **Single reviewer**, no SLA for held messages beyond the sender's ability to cancel.
 - Aliases are random adjective+noun; the same noun can appear for both people in a conversation (cosmetic).
@@ -51,6 +51,8 @@ Prerequisite: two email addresses you can read. Use two browsers or one normal +
 Local alternative without a second person: `node scripts/qa-partner.mjs` (with `.env.local` exported) plays the other side against a local Supabase. It is a test harness only, never a product feature.
 
 ## Change log
+
+- 2026-10-20 — Design pass 2: conversation (avatars, opening-round progress bar, revealed-answer cards with a “Same answer” badge, pill composer, intro card), reflection (illustrations, chip scales), Review console (pill tabs with counts). Phone fixes: question card no longer sticky on small screens; composer sits above the tab bar; Review tab in the bottom bar for admins.
 
 - 2026-10-20 — Design pass 1: light warm theme (cream/terracotta/sage), rounded components, Nunito + Fredoka, inline illustrations, one-question-per-screen slider questionnaire with progress dots and explicit "Unsure", bottom tab bar on phones (Talk / Friends / Profile), Sign out always visible. Admin accounts skip onboarding and land on Review.
 - 2026-10-20 — Hosted pilot on Vercel + Supabase; Gmail SMTP for sign-in links; activity-driven worker tick for the free plan.

@@ -24,26 +24,28 @@ export function AdminConsole({ review, reports, appeals, config, context, waitin
     router.refresh();
   }
 
-  const tabs = [["messages", `Held messages (${review.filter((r) => r.status === "review").length})`], ["reports", `Reports (${reports.length})`], ["appeals", `Appeals (${appeals.length})`], ["config", "Policy"]] as const;
+  const tabs = [["messages", "Held messages", review.filter((r) => r.status === "review").length], ["reports", "Reports", reports.length], ["appeals", "Appeals", appeals.length], ["config", "Policy", 0]] as const;
 
   return (
     <div className="space-y-5">
       <div>
-        <h1 className="text-2xl font-semibold">Review</h1>
+        <h1 className="text-3xl font-semibold">Review</h1>
         <p className="muted text-sm">{waiting} waiting in the queue. Decisions here are enforced server-side and logged like automated ones.</p>
       </div>
-      <nav aria-label="Review sections" className="flex gap-1 flex-wrap">
-        {tabs.map(([k, label]) => (
-          <button key={k} className="btn btn-secondary text-sm" aria-current={tab === k ? "page" : undefined} style={tab === k ? { borderColor: "var(--accent)", background: "var(--ok-bg)" } : undefined} onClick={() => setTab(k)}>{label}</button>
+      <nav aria-label="Review sections" className="flex gap-1 flex-wrap p-1 rounded-full" style={{ background: "var(--bg-2)" }}>
+        {tabs.map(([k, label, n]) => (
+          <button key={k} className="tab" aria-current={tab === k ? "page" : undefined} onClick={() => setTab(k)}>
+            {label}{n > 0 && <span className="count">{n}</span>}
+          </button>
         ))}
       </nav>
       {error && <div className="notice notice-bad" role="alert">{error}</div>}
 
       {tab === "messages" && (
         <ul className="space-y-3">
-          {review.length === 0 && <li className="card muted text-sm">Nothing held.</li>}
+          {review.length === 0 && <li className="card-flat muted text-sm text-center">Nothing held. Messages the automated review can't decide on will wait here.</li>}
           {review.map((r) => (
-            <li key={r.id} className="card space-y-2 text-sm">
+            <li key={r.id} className="card-flat space-y-2 text-sm">
               <div className="flex justify-between gap-2 flex-wrap"><span className="font-mono text-xs muted">{r.status} · {r.kind} · attempts {r.attempts} · {new Date(r.created_at).toLocaleString()}</span></div>
               <p className="whitespace-pre-wrap break-words">{r.body}</p>
               {r.last_error && <p className="notice notice-warn">Last error: {r.last_error}</p>}
@@ -63,9 +65,9 @@ export function AdminConsole({ review, reports, appeals, config, context, waitin
 
       {tab === "reports" && (
         <ul className="space-y-3">
-          {reports.length === 0 && <li className="card muted text-sm">No open reports.</li>}
+          {reports.length === 0 && <li className="card-flat muted text-sm text-center">No open reports.</li>}
           {reports.map((r) => (
-            <li key={r.id} className="card space-y-2 text-sm">
+            <li key={r.id} className="card-flat space-y-2 text-sm">
               <p><strong>{r.reason}</strong> · {r.status} · {new Date(r.created_at).toLocaleString()}</p>
               {r.details && <p className="whitespace-pre-wrap">{r.details}</p>}
               <details>
@@ -90,9 +92,9 @@ export function AdminConsole({ review, reports, appeals, config, context, waitin
 
       {tab === "appeals" && (
         <ul className="space-y-3">
-          {appeals.length === 0 && <li className="card muted text-sm">No open appeals.</li>}
+          {appeals.length === 0 && <li className="card-flat muted text-sm text-center">No open appeals.</li>}
           {appeals.map((a) => (
-            <li key={a.id} className="card space-y-2 text-sm">
+            <li key={a.id} className="card-flat space-y-2 text-sm">
               <p className="whitespace-pre-wrap break-words">{a.pending_messages?.body}</p>
               <p className="muted text-xs">Original decision: {a.pending_messages?.status} · {a.pending_messages?.user_explanation}</p>
               {a.note && <p>Sender says: {a.note}</p>}
@@ -108,7 +110,7 @@ export function AdminConsole({ review, reports, appeals, config, context, waitin
       {tab === "config" && (
         <ul className="space-y-2">
           {config.map((c) => (
-            <li key={c.key} className="card flex items-center justify-between gap-3 text-sm flex-wrap">
+            <li key={c.key} className="card-flat flex items-center justify-between gap-3 text-sm flex-wrap">
               <code>{c.key}</code>
               <div className="flex gap-2 items-center">
                 <code className="muted">{JSON.stringify(c.value)}</code>

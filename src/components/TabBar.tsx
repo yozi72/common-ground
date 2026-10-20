@@ -22,6 +22,12 @@ function Icon({ name, active }: { name: string; active: boolean }) {
       <path d="M3 19c0-3.3 2.7-6 6-6s6 2.7 6 6M14.5 15.5c2.5 0 4.5 1.8 4.5 4" stroke={stroke} strokeWidth="2" strokeLinecap="round" />
     </svg>
   );
+  if (name === "Review") return (
+    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6l8-3z" stroke={stroke} strokeWidth="2" fill={active ? "var(--accent-2)" : "none"} />
+      <path d="M9 12l2 2 4-4" stroke={stroke} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
   return (
     <svg width="26" height="26" viewBox="0 0 24 24" fill="none" aria-hidden="true">
       <circle cx="12" cy="8" r="4" stroke={stroke} strokeWidth="2" fill={active ? "var(--accent-2)" : "none"} />
@@ -30,12 +36,13 @@ function Icon({ name, active }: { name: string; active: boolean }) {
   );
 }
 
-export function TabBar() {
+export function TabBar({ isAdmin = false }: { isAdmin?: boolean }) {
   const path = usePathname();
+  const tabs = isAdmin ? [...TABS, { href: "/admin", label: "Review", match: (p: string) => p.startsWith("/admin") }] : TABS;
   return (
     <nav aria-label="Sections" className="sm:hidden fixed bottom-0 inset-x-0 z-20" style={{ background: "var(--card)", borderTop: "1px solid var(--line)", paddingBottom: "env(safe-area-inset-bottom)" }}>
-      <ul className="grid grid-cols-3">
-        {TABS.map((t) => {
+      <ul className="grid" style={{ gridTemplateColumns: `repeat(${tabs.length}, minmax(0, 1fr))` }}>
+        {tabs.map((t) => {
           const active = t.match(path);
           return (
             <li key={t.href}>
