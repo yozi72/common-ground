@@ -31,7 +31,8 @@ export async function GET(req: Request) {
     await supabaseAdmin().from("accounts").update({ role: "admin" }).eq("id", userId);
   }
 
-  const { data: account } = await supabase.from("accounts").select("onboarding_complete").eq("id", userId!).maybeSingle();
-  const dest = account?.onboarding_complete ? next : "/onboarding";
+  const { data: account } = await supabase.from("accounts").select("onboarding_complete, role").eq("id", userId!).maybeSingle();
+  // Reviewers go straight to the console; they can set up participation later from Talk.
+  const dest = account?.onboarding_complete ? next : account?.role === "admin" ? "/admin" : "/onboarding";
   return NextResponse.redirect(new URL(dest, env.siteUrl()));
 }

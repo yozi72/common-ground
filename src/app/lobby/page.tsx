@@ -8,8 +8,23 @@ export default async function LobbyPage() {
   const supabase = await createSupabaseServerClient();
   const { data: auth } = await supabase.auth.getUser();
   if (!auth.user) redirect("/login");
-  const { data: account } = await supabase.from("accounts").select("onboarding_complete").eq("id", auth.user.id).maybeSingle();
-  if (!account?.onboarding_complete) redirect("/onboarding");
+  const { data: account } = await supabase.from("accounts").select("onboarding_complete, role").eq("id", auth.user.id).maybeSingle();
+  if (!account?.onboarding_complete) {
+    if (account?.role !== "admin") redirect("/onboarding");
+    return (
+      <div className="space-y-4">
+        <h1 className="text-2xl font-semibold">Talk</h1>
+        <section className="card space-y-3">
+          <h2 className="font-medium">You're signed in as a reviewer</h2>
+          <p className="muted text-sm">Reviewer accounts don't take part in conversations unless you choose to. If you'd like to try the participant side yourself, set up a participant profile; it takes about two minutes.</p>
+          <div className="flex gap-2 flex-wrap">
+            <a className="btn btn-primary" href="/onboarding">Set up to take part</a>
+            <a className="btn btn-secondary" href="/admin">Go to Review</a>
+          </div>
+        </section>
+      </div>
+    );
+  }
 
   // An open conversation takes priority over the queue.
   const { data: live } = await supabase
