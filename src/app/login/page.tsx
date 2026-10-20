@@ -2,6 +2,7 @@
 import { useState, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { supabaseBrowser } from "@/lib/supabase/client";
+import { Lantern } from "@/components/Illustrations";
 
 function LoginForm() {
   const params = useSearchParams();
@@ -23,8 +24,9 @@ function LoginForm() {
 
   return (
     <div className="max-w-sm mx-auto space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold">Sign in</h1>
+      <Lantern className="w-36 h-auto mx-auto float" />
+      <div className="text-center">
+        <h1 className="text-3xl font-semibold">Sign in</h1>
         <p className="muted text-sm mt-1">We'll email you a one-time link. No password. Your email is only used to sign you in and is never shown to other participants.</p>
       </div>
       {state === "sent" ? (

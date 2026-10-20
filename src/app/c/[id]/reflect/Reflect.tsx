@@ -69,9 +69,9 @@ export function Reflect({ conversationId, peerAlias, endReason, questionsAsked, 
           <h2 className="font-medium">Would you talk with {peerAlias} again?</h2>
           <p className="muted text-sm">Your answer is private. If you both say yes, you'll both see it and can invite each other to another conversation, still under your aliases. If only one of you says yes, neither of you is told.</p>
           {connected ? (
-            <div className="notice notice-ok" role="status">You both said yes. You'll find {peerAlias} under <Link className="underline" href="/connections">Connections</Link>.</div>
+            <div className="notice notice-ok" role="status">You both said yes. You'll find {peerAlias} under <Link className="underline" href="/connections">Friends</Link>.</div>
           ) : decision === true ? (
-            <p className="notice notice-ok" role="status">Recorded. If they also say yes, they'll appear in your Connections.</p>
+            <p className="notice notice-ok" role="status">Recorded. If they also say yes, they'll appear under Friends.</p>
           ) : decision === false ? (
             <p className="muted text-sm" role="status">Recorded. <button className="underline" onClick={() => decide(true)}>Change to yes</button></p>
           ) : (

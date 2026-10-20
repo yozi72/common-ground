@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabaseBrowser } from "@/lib/supabase/client";
+import { TwoCups, Bridge } from "@/components/Illustrations";
 
 type Request = { id: string; status: string; expires_at: string; notify_email: boolean } | null;
 type Invitation = { id: string; kind: string; expires_at: string; my_decision: string | null };
@@ -70,12 +71,13 @@ export function Lobby({ userId, initialRequest, initialInvitations }: { userId: 
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-semibold">Talk</h1>
+      <h1 className="text-3xl font-semibold">Talk</h1>
       {error && <div className="notice notice-bad" role="alert">{error}</div>}
 
       {invitations.map((inv) => (
-        <section key={inv.id} className="card space-y-3" aria-live="polite">
-          <h2 className="font-medium">{inv.kind === "reconnect" ? "Someone you connected with wants to talk again" : "We found someone"}</h2>
+        <section key={inv.id} className="card space-y-3 pop" aria-live="polite" style={{ borderColor: "var(--accent)" }}>
+          <Bridge className="w-32 h-auto mx-auto" />
+          <h2 className="font-semibold text-xl text-center">{inv.kind === "reconnect" ? "Someone you connected with wants to talk again" : "We found someone"}</h2>
           <p className="muted text-sm">
             {inv.kind === "reconnect"
               ? "Accepting opens a new conversation with the same aliases as before."
@@ -95,7 +97,8 @@ export function Lobby({ userId, initialRequest, initialInvitations }: { userId: 
 
       {request && request.status === "waiting" && (
         <section className="card space-y-3" aria-live="polite">
-          <h2 className="font-medium">You're on the list</h2>
+          <TwoCups className="w-32 h-auto mx-auto float" />
+          <h2 className="font-semibold text-xl text-center">You're on the list</h2>
           <p className="muted text-sm">
             We'll invite you when someone with different views is also waiting. This can take a while; it depends on who else is here.
             Your spot expires in about {Math.max(1, Math.round(secondsLeft(request.expires_at) / 60))} min.
@@ -107,7 +110,8 @@ export function Lobby({ userId, initialRequest, initialInvitations }: { userId: 
 
       {!request && invitations.length === 0 && (
         <section className="card space-y-4">
-          <h2 className="font-medium">Ready to talk?</h2>
+          <TwoCups className="w-32 h-auto mx-auto" />
+          <h2 className="font-semibold text-xl text-center">Ready to talk?</h2>
           <p className="muted text-sm">You'll be paired with another adult whose questionnaire answers differ from yours. You'll both get the same questions, and you can leave at any time.</p>
           <label className="flex gap-3 items-start cursor-pointer">
             <input type="checkbox" className="mt-1 h-5 w-5" checked={notifyEmail} onChange={(e) => setNotifyEmail(e.target.checked)} />

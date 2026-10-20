@@ -105,7 +105,7 @@ export function Conversation({ conversationId, myParticipantId, myAlias, peerAli
     <div className="flex flex-col gap-4 min-h-[70dvh]">
       <header className="flex items-center justify-between gap-2">
         <div>
-          <h1 className="text-lg font-semibold">Talking with {peerAlias}</h1>
+          <h1 className="text-xl font-semibold">Talking with {peerAlias}</h1>
           <p className="muted text-xs">You're {myAlias}. {conv.status === "opening" ? `Opening question ${Math.min(conv.questions_asked, conv.opening_question_count)} of ${conv.opening_question_count}` : "Open conversation"}</p>
         </div>
         <div className="relative">
@@ -166,7 +166,7 @@ export function Conversation({ conversationId, myParticipantId, myAlias, peerAli
 function Bubble({ mine, alias, body, at }: { mine: boolean; alias: string; body: string; at: string }) {
   return (
     <div className={`flex ${mine ? "justify-end" : "justify-start"}`}>
-      <div className="max-w-[85%] rounded-2xl px-4 py-2.5" style={{ background: mine ? "var(--mine)" : "var(--theirs)" }}>
+      <div className="max-w-[85%] px-4 py-2.5" style={{ background: mine ? "var(--mine)" : "var(--theirs)", borderRadius: mine ? "20px 20px 6px 20px" : "20px 20px 20px 6px" }}>
         <div className="text-xs muted mb-0.5">{alias} · {new Date(at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</div>
         <div className="whitespace-pre-wrap break-words">{body}</div>
       </div>
@@ -207,7 +207,7 @@ function QuestionCard({ q, mine, peerAlias, peerAnswered, pendingAnswer, onChoic
   const answered = mine && (mine.status === "approved" || mine.status === "skipped");
 
   return (
-    <section className="card space-y-3 sticky bottom-2 shadow-lg" aria-live="polite" aria-label="Current question">
+    <section className="card space-y-3 sticky bottom-2" aria-live="polite" aria-label="Current question" style={{ borderColor: "var(--accent)" }}>
       <p className="text-xs muted">{q.phase === "opening" ? `Question ${q.seq}` : "A question for both of you"}</p>
       <p className="font-medium text-lg">{q.question_text}</p>
       {answered ? (
@@ -218,9 +218,9 @@ function QuestionCard({ q, mine, peerAlias, peerAnswered, pendingAnswer, onChoic
         <>
           <div className="grid gap-2">
             {q.choices.map((c, i) => (
-              <button key={i} className="btn btn-secondary justify-start text-left whitespace-normal h-auto py-3" onClick={() => onChoice(i)}>{c}</button>
+              <button key={i} className="option" onClick={() => onChoice(i)}>{c}</button>
             ))}
-            {!showCustom && <button className="btn btn-secondary justify-start" onClick={() => setShowCustom(true)}>Write my own answer…</button>}
+            {!showCustom && <button className="option muted" onClick={() => setShowCustom(true)}>Write my own answer…</button>}
           </div>
           {showCustom && (
             <form className="space-y-2" onSubmit={(e) => { e.preventDefault(); if (custom.trim()) { onCustom(custom.trim()); setCustom(""); setShowCustom(false); } }}>

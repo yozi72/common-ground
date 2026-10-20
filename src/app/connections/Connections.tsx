@@ -23,16 +23,16 @@ export function Connections({ initial }: { initial: Conn[] }) {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-semibold">Connections</h1>
+        <h1 className="text-3xl font-semibold">Friends</h1>
         <p className="muted text-sm mt-1">People you've both agreed to talk with again. Still aliases only; contact sharing isn't part of this pilot.</p>
       </div>
       {error && <div className="notice notice-bad" role="alert">{error}</div>}
-      {list.length === 0 && <p className="card muted text-sm">No connections yet. After a conversation, you'll be asked privately whether you'd talk again.</p>}
+      {list.length === 0 && <p className="card muted text-sm">No friends yet. After a conversation, you'll be asked privately whether you'd talk again; if you both say yes, they show up here.</p>}
       <ul className="space-y-3">
         {list.map((c) => (
           <li key={c.connection_id} className="card flex items-center justify-between gap-3 flex-wrap">
             <div>
-              <p className="font-medium">{c.peer_alias}</p>
+              <p className="font-semibold text-lg">{c.peer_alias}</p>
               <p className="muted text-xs">You're {c.my_alias} to them · since {new Date(c.since).toLocaleDateString()}{c.status === "ended" ? " · ended" : ""}</p>
             </div>
             {c.status === "active" && (c.pending_invitation_id ? (

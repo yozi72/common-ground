@@ -2,13 +2,18 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabaseBrowser } from "@/lib/supabase/client";
-import { DIMENSIONS, SCALE, LIFE_CONTEXT_OPTIONS, type PoliticalAnswers } from "@/lib/political";
+import { DIMENSIONS, LIFE_CONTEXT_OPTIONS, type PoliticalAnswers } from "@/lib/political";
+import { Compass, Sprout, QuestionGlyph } from "@/components/Illustrations";
 
 const TERMS_VERSION = "pilot-v1";
 
+// Screens: 0 basics · 1 about you · 2..6 one questionnaire item each · 7 done
+const QUESTION_START = 2;
+const DONE = QUESTION_START + DIMENSIONS.length;
+
 export default function Onboarding() {
   const router = useRouter();
-  const [step, setStep] = useState(0);
+  const [screen, setScreen] = useState(0);
   const [adult, setAdult] = useState(false);
   const [terms, setTerms] = useState(false);
   const [ageBand, setAgeBand] = useState("");
@@ -21,6 +26,7 @@ export default function Onboarding() {
   const [error, setError] = useState<string | null>(null);
 
   const answered = Object.keys(answers).length;
+  const qIndex = screen - QUESTION_START;
 
   async function finish() {
     setBusy(true); setError(null);
@@ -33,115 +39,89 @@ export default function Onboarding() {
     router.push("/lobby");
   }
 
-  const steps = ["Basics", "About you", "Your views", "Done"];
-
   return (
     <div className="space-y-6">
-      <ol className="flex gap-2 text-xs muted" aria-label="Progress">
-        {steps.map((s, i) => (
-          <li key={s} aria-current={i === step ? "step" : undefined} className={i === step ? "font-semibold" : ""} style={i === step ? { color: "var(--fg)" } : undefined}>
-            {i + 1}. {s}
-          </li>
-        ))}
-      </ol>
+      <Progress total={DONE + 1} current={screen} />
 
-      {step === 0 && (
-        <section className="space-y-4">
-          <h1 className="text-2xl font-semibold">Before you start</h1>
-          <label className="flex gap-3 items-start card cursor-pointer">
-            <input type="checkbox" className="mt-1 h-5 w-5" checked={adult} onChange={(e) => setAdult(e.target.checked)} />
-            <span>I am 18 or older.</span>
+      {screen === 0 && (
+        <section className="space-y-5 pop" key="s0">
+          <Compass className="w-40 h-auto mx-auto float" />
+          <div className="text-center">
+            <h1 className="text-3xl font-semibold">Before you start</h1>
+            <p className="muted mt-1">Two quick things, then a little about you.</p>
+          </div>
+          <label className="option flex gap-3 items-center cursor-pointer" aria-pressed={adult}>
+            <input type="checkbox" className="h-6 w-6 accent-[var(--accent)]" checked={adult} onChange={(e) => setAdult(e.target.checked)} />
+            <span>I&apos;m 18 or older.</span>
           </label>
-          <label className="flex gap-3 items-start card cursor-pointer">
-            <input type="checkbox" className="mt-1 h-5 w-5" checked={terms} onChange={(e) => setTerms(e.target.checked)} />
-            <span>
-              I understand this is a pilot. My messages are reviewed before delivery, I'll appear under a random alias, and
-              sharing contact details isn't available. <a className="underline" href="/privacy" target="_blank">Details</a>
+          <label className="option flex gap-3 items-start cursor-pointer" aria-pressed={terms}>
+            <input type="checkbox" className="mt-1 h-6 w-6 shrink-0 accent-[var(--accent)]" checked={terms} onChange={(e) => setTerms(e.target.checked)} />
+            <span className="text-base font-normal">
+              I get that this is a pilot: my messages are checked before delivery, I&apos;ll have a random alias, and contact details can&apos;t be shared.{" "}
+              <a className="underline" href="/privacy" target="_blank">Details</a>
             </span>
           </label>
-          <button className="btn btn-primary w-full" disabled={!adult || !terms} onClick={() => setStep(1)}>Continue</button>
+          <button className="btn btn-primary w-full" disabled={!adult || !terms} onClick={() => setScreen(1)}>Let&apos;s go</button>
         </section>
       )}
 
-      {step === 1 && (
-        <section className="space-y-4">
-          <h1 className="text-2xl font-semibold">A little about you</h1>
-          <p className="muted text-sm">All optional and deliberately coarse. Nothing here is shown to the person you talk with.</p>
+      {screen === 1 && (
+        <section className="space-y-5 pop" key="s1">
+          <div className="text-center">
+            <h1 className="text-3xl font-semibold">A little about you</h1>
+            <p className="muted mt-1">All optional and deliberately vague. Never shown to the person you talk with.</p>
+          </div>
           <Select label="Age" value={ageBand} onChange={setAgeBand} options={["18-24", "25-34", "35-44", "45-54", "55-64", "65+"]} />
           <Select label="Region" value={region} onChange={setRegion} options={["northeast", "midwest", "south", "west", "other"]} />
           <Select label="Where you live" value={community} onChange={setCommunity} options={["urban", "suburban", "rural", "mixed"]} />
           <fieldset>
-            <legend className="text-sm font-medium mb-2">Life context (pick any)</legend>
+            <legend className="eyebrow mb-2">Life context — pick any</legend>
             <div className="flex flex-wrap gap-2">
               {LIFE_CONTEXT_OPTIONS.map((o) => {
                 const on = context.includes(o);
                 return (
-                  <button type="button" key={o} aria-pressed={on} onClick={() => setContext(on ? context.filter((c) => c !== o) : [...context, o])}
-                    className="btn btn-secondary px-3 py-1.5 text-sm" style={on ? { borderColor: "var(--accent)", background: "var(--ok-bg)" } : undefined}>
-                    {o}
-                  </button>
+                  <button type="button" key={o} className="chip" aria-pressed={on} onClick={() => setContext(on ? context.filter((c) => c !== o) : [...context, o])}>{o}</button>
                 );
               })}
             </div>
           </fieldset>
-          <label className="flex gap-3 items-start card cursor-pointer">
-            <input type="checkbox" className="mt-1 h-5 w-5" checked={shareContext} onChange={(e) => setShareContext(e.target.checked)} />
-            <span className="text-sm">
-              Let the question generator use my life context to pick better questions. Only used if the other person also agrees, and never shown to them.
-            </span>
+          <label className="option flex gap-3 items-start cursor-pointer" aria-pressed={shareContext}>
+            <input type="checkbox" className="mt-1 h-6 w-6 shrink-0 accent-[var(--accent)]" checked={shareContext} onChange={(e) => setShareContext(e.target.checked)} />
+            <span className="text-sm font-normal">Let the question-picker use my life context to choose better questions. Only if the other person agrees too; never shown to them.</span>
           </label>
           <div className="flex gap-2">
-            <button className="btn btn-secondary" onClick={() => setStep(0)}>Back</button>
-            <button className="btn btn-primary flex-1" onClick={() => setStep(2)}>Continue</button>
+            <button className="btn btn-secondary" onClick={() => setScreen(0)}>Back</button>
+            <button className="btn btn-primary flex-1" onClick={() => setScreen(QUESTION_START)}>Continue</button>
           </div>
         </section>
       )}
 
-      {step === 2 && (
-        <section className="space-y-5">
-          <h1 className="text-2xl font-semibold">Your views</h1>
-          <p className="muted text-sm">
-            This is only used to pair you with someone who answered differently. Your answers are private: the other person
-            will only know that you differ, never how. Answer at least 3; skip any you like.
-          </p>
-          {DIMENSIONS.map((d) => (
-            <fieldset key={d.key} className="card space-y-2">
-              <legend className="font-medium">{d.prompt}</legend>
-              <div className="flex justify-between text-xs muted"><span>{d.low}</span><span>{d.high}</span></div>
-              <div className="grid grid-cols-5 gap-1" role="radiogroup" aria-label={d.prompt}>
-                {SCALE.map((s) => {
-                  const on = answers[d.key] === s.value;
-                  return (
-                    <button type="button" key={s.value} role="radio" aria-checked={on} aria-label={s.label}
-                      onClick={() => setAnswers({ ...answers, [d.key]: s.value })}
-                      className="btn btn-secondary px-0 text-xs" style={on ? { borderColor: "var(--accent)", background: "var(--ok-bg)" } : undefined}>
-                      {s.value === 0 ? "?" : s.value < 0 ? "◀".repeat(-s.value) : "▶".repeat(s.value)}
-                    </button>
-                  );
-                })}
-              </div>
-              {answers[d.key] !== undefined && (
-                <button type="button" className="btn btn-ghost text-xs px-2 py-1 min-h-0" onClick={() => { const a = { ...answers }; delete a[d.key]; setAnswers(a); }}>Skip this one</button>
-              )}
-            </fieldset>
-          ))}
-          <div className="flex gap-2">
-            <button className="btn btn-secondary" onClick={() => setStep(1)}>Back</button>
-            <button className="btn btn-primary flex-1" disabled={answered < 3} onClick={() => setStep(3)}>
-              {answered < 3 ? `Answer ${3 - answered} more` : "Continue"}
-            </button>
-          </div>
-        </section>
+      {qIndex >= 0 && qIndex < DIMENSIONS.length && (
+        <QuestionScreen
+          key={`q${qIndex}`}
+          index={qIndex}
+          value={answers[DIMENSIONS[qIndex].key]}
+          onChange={(v) => setAnswers({ ...answers, [DIMENSIONS[qIndex].key]: v })}
+          onSkip={() => { const a = { ...answers }; delete a[DIMENSIONS[qIndex].key]; setAnswers(a); setScreen(screen + 1); }}
+          onBack={() => setScreen(screen - 1)}
+          onNext={() => setScreen(screen + 1)}
+          answeredSoFar={answered}
+        />
       )}
 
-      {step === 3 && (
-        <section className="space-y-4">
-          <h1 className="text-2xl font-semibold">You're set</h1>
-          <p className="muted">When you're ready, you'll join a waiting list. We'll look for someone who answered differently and invite you both. Either of you can decline.</p>
+      {screen === DONE && (
+        <section className="space-y-5 pop text-center" key="done">
+          <Sprout className="w-44 h-auto mx-auto float" />
+          <h1 className="text-3xl font-semibold">{answered >= 3 ? "You're set" : `Answer ${3 - answered} more to continue`}</h1>
+          {answered >= 3 ? (
+            <p className="muted">You answered {answered} of 5. When you&apos;re ready, you&apos;ll join a waiting list and we&apos;ll find someone who sees some of this differently. Either of you can say no thanks.</p>
+          ) : (
+            <p className="muted">We need at least three answers to find someone who differs from you. Go back and answer a couple more; &ldquo;unsure&rdquo; counts.</p>
+          )}
           {error && <div className="notice notice-bad" role="alert">{error}</div>}
           <div className="flex gap-2">
-            <button className="btn btn-secondary" onClick={() => setStep(2)}>Back</button>
-            <button className="btn btn-primary flex-1" disabled={busy} onClick={finish}>{busy ? "Saving…" : "Finish"}</button>
+            <button className="btn btn-secondary" onClick={() => setScreen(DONE - 1)}>Back</button>
+            <button className="btn btn-primary flex-1" disabled={busy || answered < 3} onClick={finish}>{busy ? "Saving…" : "Finish"}</button>
           </div>
         </section>
       )}
@@ -149,11 +129,60 @@ export default function Onboarding() {
   );
 }
 
+function Progress({ total, current }: { total: number; current: number }) {
+  return (
+    <div className="flex items-center justify-between">
+      <div className="dots" role="progressbar" aria-valuemin={1} aria-valuemax={total} aria-valuenow={current + 1} aria-label="Setup progress">
+        {Array.from({ length: total }).map((_, i) => (
+          <span key={i} className="dot" data-state={i < current ? "done" : i === current ? "current" : "todo"} />
+        ))}
+      </div>
+      <span className="eyebrow">{current + 1} / {total}</span>
+    </div>
+  );
+}
+
+function QuestionScreen({ index, value, onChange, onSkip, onBack, onNext, answeredSoFar }: {
+  index: number; value: number | undefined; onChange: (v: number) => void; onSkip: () => void; onBack: () => void; onNext: () => void; answeredSoFar: number;
+}) {
+  const d = DIMENSIONS[index];
+  const v = value ?? 0;
+  const label = value === undefined ? "Slide to answer, or skip" : v === 0 ? "Unsure / somewhere in between" : `${Math.abs(v) === 2 ? "Strongly" : "Leaning"} “${v < 0 ? d.low : d.high}”`;
+  return (
+    <section className="space-y-5 pop">
+      <QuestionGlyph index={index} className="w-40 h-auto mx-auto" />
+      <div className="text-center">
+        <p className="eyebrow">Your views · {index + 1} of {DIMENSIONS.length}</p>
+        <h1 className="text-2xl font-semibold mt-1">{d.prompt}</h1>
+        {index === 0 && <p className="muted text-sm mt-2">Only used to pair you with someone who answered differently. The other person never sees your answers.</p>}
+      </div>
+      <div className="card space-y-4">
+        <div className="flex justify-between gap-4 text-sm font-medium">
+          <span className="text-left flex-1" style={{ color: v < 0 && value !== undefined ? "var(--fg)" : "var(--muted)" }}>{d.low}</span>
+          <span className="text-right flex-1" style={{ color: v > 0 ? "var(--fg)" : "var(--muted)" }}>{d.high}</span>
+        </div>
+        <input type="range" className="slider" min={-2} max={2} step={1} value={v} onChange={(e) => onChange(Number(e.target.value))}
+          aria-label={d.prompt} aria-valuetext={label} />
+        <p className="text-center text-sm min-h-[1.5rem]" aria-live="polite" style={{ color: value === undefined ? "var(--muted)" : "var(--fg)" }}>{label}</p>
+        <div className="flex justify-center">
+          <button type="button" className="chip" aria-pressed={value === 0} onClick={() => onChange(0)}>Unsure / in between</button>
+        </div>
+      </div>
+      <div className="flex gap-2">
+        <button className="btn btn-secondary" onClick={onBack}>Back</button>
+        {value === undefined && <button className="btn btn-ghost" onClick={onSkip}>Skip</button>}
+        <button className="btn btn-primary flex-1" disabled={value === undefined} onClick={onNext}>{index === DIMENSIONS.length - 1 ? "Done" : "Next"}</button>
+      </div>
+      <p className="text-center text-xs muted">{answeredSoFar} answered · at least 3 needed</p>
+    </section>
+  );
+}
+
 function Select({ label, value, onChange, options }: { label: string; value: string; onChange: (v: string) => void; options: string[] }) {
   const id = label.toLowerCase().replace(/\s+/g, "-");
   return (
     <div>
-      <label className="block text-sm font-medium mb-1" htmlFor={id}>{label}</label>
+      <label className="block text-sm font-semibold mb-1" htmlFor={id}>{label}</label>
       <select id={id} className="field" value={value} onChange={(e) => onChange(e.target.value)}>
         <option value="">Prefer not to say</option>
         {options.map((o) => <option key={o} value={o}>{o}</option>)}
