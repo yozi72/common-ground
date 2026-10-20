@@ -83,6 +83,7 @@ export function ReminderControls({ initial, schedule, pushAvailable, emailAvaila
           <a className="btn btn-secondary" href={`/api/calendar?${calendarQuery}`} download>Apple / Outlook (.ics)</a>
           <a className="btn btn-secondary" href={`/api/calendar?${calendarQuery}&google=1`} target="_blank" rel="noopener">Google Calendar</a>
         </div>
+        <p className="muted text-xs">On iPhone: tap <strong>Continue</strong>, then the <strong>Add To Calendar</strong> button at the bottom of the preview. The check mark at the top only closes the preview without saving.</p>
         {!compact && (
           <p className="muted text-xs">The event asks for an alert 10 minutes before; your calendar app decides the final alert settings. Imported events are managed in your calendar app: changing a preference here doesn&apos;t remove one, and a downloaded event won&apos;t update by itself if the schedule changes.</p>
         )}

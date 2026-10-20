@@ -26,7 +26,7 @@ Pilot is live at https://common-ground-dusky-nine.vercel.app (commit d2f5eb9). W
 - Nothing mid-edit. All work committed and pushed (d2f5eb9), hosted migration applied, deployed.
 
 ## Next steps
-- User to test push on a real phone (Profile → Reminders → Enable; iPhone needs Add to Home Screen first).
+- User to test push on a real phone: calendar export verified on iPhone; push still needs Add to Home Screen → open from the icon → Enable phone notifications.
 - Domain + Resend to replace Gmail SMTP.
 - A real two-user run during a live 6 pm Pacific session.
 - Verify Supabase Realtime delivery on the hosted project (polling covers it today).
@@ -38,6 +38,7 @@ Pilot is live at https://common-ground-dusky-nine.vercel.app (commit d2f5eb9). W
 - Reviewer coverage: held messages wait for the single admin.
 
 ## Gotchas
+- iOS calendar preview: the top-right check mark closes without saving; only the bottom "Add To Calendar" button saves. A hint was added under the calendar buttons (`src/components/ReminderControls.tsx`) after the user's real-device test (2026-10-20). The .ics itself rendered correctly on iPhone (18:00–19:00, repeats daily, 10-min alert, link).
 - `.env.local` is git-ignored; hosted keys live in `.vercel/hosted.env.local` and the prod cron secret in `.vercel/cron-secret.local` (both ignored). Vercel env: `--type config` for plain values; secrets default.
 - Supabase CLI is the npm one (`npx supabase`), logged in; `npx supabase db push --yes` works non-interactively. Set `PATH=/opt/homebrew/bin:$PATH` and `DOCKER_HOST=unix://$HOME/.colima/default/docker.sock` for local `migration up`.
 - The browser pane shares one cookie jar: two signed-in users need the partner harness (`scripts/qa-partner.mjs`) or `scripts/test-login-link.mjs` for a hosted test account. Background tabs throttle timers; don't read "stale" lobby state from a hidden pane as an app bug.
