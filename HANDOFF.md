@@ -3,7 +3,8 @@
 Short status for anyone reviewing this codebase (including an AI reviewer). Updated with every push; newest entry first under "Change log".
 
 - **Preview (production pilot):** https://common-ground-dusky-nine.vercel.app
-- **Repository:** see `git remote -v` (GitHub, public). No secrets are committed; see "Secrets".
+- **Repository:** https://github.com/yozi72/common-ground (public). No secrets are committed; see "Secrets".
+- **These notes:** `HANDOFF.md` at the repository root — https://github.com/yozi72/common-ground/blob/main/HANDOFF.md
 - **What it is:** an anonymous, moderated text-conversation app pairing adults across political differences. Full product brief and decisions: `DECISIONS.md`. Setup, architecture and verification: `README.md`.
 
 ## What works (verified)
