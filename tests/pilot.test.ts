@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from "vitest";
-import { admin, makeUser, deleteUser, resetQueue, openSessionNow, closeSessions, LEFT, RIGHT, MIXED, matchPair, openConversation, finishOpeningRound, type TestUser } from "./helpers";
+import { admin, makeUser, deleteUser, resetQueue, openSessionNow, closeSessions, LEFT, RIGHT, MIXED, FEW, KEYS, matchPair, openConversation, finishOpeningRound, type TestUser } from "./helpers";
+import { buildQuestionInput } from "@/lib/workers/questions";
 import { sendDueReminders } from "@/lib/workers/reminders";
 import { sessionDueForReminder, DEFAULT_SCHEDULE } from "@/lib/schedule";
 import { getScheduleConfig } from "@/lib/schedule-config";
@@ -7,8 +8,8 @@ import { processPendingBatch } from "@/lib/workers/moderation";
 import { generateNextQuestion } from "@/lib/workers/questions";
 
 const users: TestUser[] = [];
-async function user(tag: string, answers: Record<string, number>, onboard = true) {
-  const u = await makeUser(tag, answers, onboard);
+async function user(tag: string, answers: Record<string, number>, onboard = true, extra: { nonanswers?: Record<string, "unsure" | "declined">; priorities?: string[] } = {}) {
+  const u = await makeUser(tag, answers, onboard, extra);
   users.push(u);
   return u;
 }
@@ -124,20 +125,74 @@ describe("matching", () => {
     expect(byId[a2.id]).toBe("waiting");
   });
 
-  it("mixed/unsure users match on overlapping dimensions only", async () => {
-    const m = await user("mix", { gov_role: 0, tradition: 0, immigration: -2 });
-    const r = await user("mix-r", RIGHT);
-    const { pairs } = await matchPair(m, r);
-    expect(pairs).toBe(1); // mean |diff| over 3 shared dims = (2+2+4)/3 = 2.67
+  it("v2 scoring in the database: five shared answers required; not-sure/declined/untouched never count; versions must match", async () => {
+    // insufficient overlap (4 shared) → not matched even though every shared answer is opposite
+    const few = await user("v2-few", FEW);
+    const l = await user("v2-l", LEFT);
+    await few.client.rpc("join_queue", { p_notify_email: false });
+    await l.client.rpc("join_queue", { p_notify_email: false });
+    expect((await admin().rpc("run_matching")).data).toBe(0);
+    const { data: ds } = await admin().rpc("difference_score", { a: FEW, b: LEFT });
+    expect(ds).toBeNull();
+    // non-answers are stored separately and are not answers
+    const ns = await user("v2-ns", { public_services: 0 }, true, { nonanswers: { healthcare: "unsure", abortion: "declined" }, priorities: ["healthcare", "climate"] });
+    const { data: prof } = await admin().from("profiles").select("political_answers, political_nonanswers, issue_priorities, questionnaire_version").eq("account_id", ns.id).single();
+    expect(prof).toEqual({ political_answers: { public_services: 0 }, political_nonanswers: { healthcare: "unsure", abortion: "declined" }, issue_priorities: ["healthcare", "climate"], questionnaire_version: 2 });
+    const { data: d2 } = await admin().rpc("shared_answers", { a: prof!.political_answers, b: LEFT });
+    expect(d2).toBe(1);
+    // explicit middle counts as substantive
+    const mid = await user("v2-mid", MIXED);
+    const { data: d3 } = await admin().rpc("difference_score", { a: MIXED, b: LEFT });
+    expect(Number(d3)).toBeCloseTo((0.5 + 0.75 + 0.25 + 0.5 + 0.5) / 5, 3);
+    // version mismatch is never compared
+    await admin().from("profiles").update({ questionnaire_version: 1 }).eq("account_id", mid.id);
+    await resetQueue();
+    await mid.client.rpc("join_queue", { p_notify_email: false });
+    await l.client.rpc("join_queue", { p_notify_email: false });
+    expect((await admin().rpc("run_matching")).data).toBe(0);
+    await admin().from("profiles").update({ questionnaire_version: 2 }).eq("account_id", mid.id);
+    expect((await admin().rpc("run_matching")).data).toBe(1); // 0.5 ≥ 0.4
+    // server validation
+    const bad = await ns.client.rpc("complete_onboarding", { p_age_band: null, p_region: null, p_community: null, p_life_context: [], p_share_context: false, p_political_answers: { abortion: 1.5 }, p_political_nonanswers: {}, p_issue_priorities: [], p_questionnaire_version: 2, p_terms_version: "t" });
+    expect(bad.error?.message).toMatch(/out of range/);
+    const bad2 = await ns.client.rpc("complete_onboarding", { p_age_band: null, p_region: null, p_community: null, p_life_context: [], p_share_context: false, p_political_answers: {}, p_political_nonanswers: {}, p_issue_priorities: ["a", "b", "c"], p_questionnaire_version: 2, p_terms_version: "t" });
+    expect(bad2.error?.message).toMatch(/two priorities/);
   });
 
-  it("requires at least 3 answered dimensions and completed onboarding", async () => {
-    const few = await user("few", { gov_role: 2 });
-    const { error } = await few.client.rpc("join_queue", { p_notify_email: false });
-    expect(error?.code).toBe("P0001");
-    const raw = await user("raw", {}, false);
-    const { error: e2 } = await raw.client.rpc("join_queue", { p_notify_email: false });
-    expect(e2?.message).toMatch(/onboarding/);
+  it("people with insufficient answers can choose 'anyone available' immediately; both must allow it", async () => {
+    const few = await user("ia-few", FEW);
+    const l = await user("ia-l", LEFT);
+    await few.client.rpc("join_queue", { p_notify_email: false });
+    await l.client.rpc("join_queue", { p_notify_email: false });
+    expect((await few.client.rpc("set_broaden", { p_level: "any" })).error).toBeNull(); // no 120 s wait
+    expect((await l.client.rpc("set_broaden", { p_level: "any" })).error?.message).toMatch(/not yet/); // l has enough answers
+    expect((await admin().rpc("run_matching")).data).toBe(0); // l hasn't consented
+    await admin().from("availability_requests").update({ created_at: new Date(Date.now() - 130_000).toISOString() }).eq("account_id", l.id);
+    expect((await l.client.rpc("set_broaden", { p_level: "any" })).error).toBeNull();
+    expect((await admin().rpc("run_matching")).data).toBe(1);
+  });
+
+  it("existing accounts keep their data when they complete the new questionnaire", async () => {
+    const a = await user("ex-a", LEFT, true, { priorities: ["climate"] });
+    const { data: before } = await admin().from("accounts").select("id, role, created_at").eq("id", a.id).single();
+    const { data: consents } = await admin().from("consent_events").select("id").eq("account_id", a.id);
+    const r = await a.client.rpc("complete_onboarding", { p_age_band: "35-44", p_region: "south", p_community: "rural", p_life_context: ["veteran"], p_share_context: true, p_political_answers: RIGHT, p_political_nonanswers: {}, p_issue_priorities: ["abortion", "gun_purchases"], p_questionnaire_version: 2, p_terms_version: "pilot-v1" });
+    expect(r.error).toBeNull();
+    const { data: after } = await admin().from("accounts").select("id, role, created_at, onboarding_complete").eq("id", a.id).single();
+    expect(after).toMatchObject(before!);
+    const { data: consents2 } = await admin().from("consent_events").select("id").eq("account_id", a.id);
+    expect(consents2!.length).toBe(consents!.length + 2);
+    const { data: prof } = await admin().from("profiles").select("political_answers, issue_priorities, life_context").eq("account_id", a.id).single();
+    expect(prof).toEqual({ political_answers: RIGHT, issue_priorities: ["abortion", "gun_purchases"], life_context: ["veteran"] });
+  });
+
+  it("political answers and priorities never reach the question model", async () => {
+    const input = buildQuestionInput({ phase: "opening", seq: 1, profiles: [{ life_context: ["parent"], share_context_with_prompts: true }, { life_context: ["veteran"], share_context_with_prompts: true }], previous: ["q1"], skipped: [], recent: [{ alias: "A", body: "hi" }] });
+    const text = JSON.stringify(input);
+    for (const k of [...KEYS, "political", "priorit", "questionnaire", "age_band", "region", "email"]) expect(text).not.toContain(k);
+    expect(input.sharedContext).toEqual([{ lifeContext: ["parent"] }, { lifeContext: ["veteran"] }]);
+    const noConsent = buildQuestionInput({ phase: "mid", seq: 11, profiles: [{ life_context: ["parent"], share_context_with_prompts: true }, { life_context: ["veteran"], share_context_with_prompts: false }], previous: [], skipped: [], recent: [] });
+    expect(noConsent.sharedContext).toBeNull();
   });
 
   it("concurrent acceptances open exactly one conversation; a decline requeues the other", async () => {
@@ -677,18 +732,18 @@ describe("daily session, readiness, nonresponders, broadening", () => {
   });
 
   it("broadening needs explicit consent after the waiting thresholds and respects both people's preferences", async () => {
-    const a = await user("br-a", { gov_role: -1, tradition: 0, immigration: 0, economy: 0, institutions: 0 });
-    const b = await user("br-b", { gov_role: 1, tradition: 0, immigration: 0, economy: 0, institutions: 0 }); // score 0.4
+    const a = await user("br-a", { public_services: 0.5, high_income_taxes: 0.5, healthcare: 0.5, legal_immigration: 0.5, deportations: 0.5, abortion: 0, gun_purchases: 0.5, climate: 0.5 });
+    const b = await user("br-b", { public_services: 0.75, high_income_taxes: 0.75, healthcare: 0.25, legal_immigration: 0.5, deportations: 0.5, abortion: 0, gun_purchases: 0.5, climate: 0.5 }); // score 0.09375
     await a.client.rpc("join_queue", { p_notify_email: false });
     await b.client.rpc("join_queue", { p_notify_email: false });
-    expect((await admin().rpc("run_matching")).data).toBe(0); // 0.4 < 1.0
+    expect((await admin().rpc("run_matching")).data).toBe(0); // 0.094 < 0.4
     const early = await a.client.rpc("set_broaden", { p_level: "relaxed" });
     expect(early.error?.message).toMatch(/not yet/);
     await admin().from("availability_requests").update({ created_at: new Date(Date.now() - 130_000).toISOString() }).in("account_id", [a.id, b.id]);
     expect((await a.client.rpc("set_broaden", { p_level: "relaxed" })).error).toBeNull();
     expect((await admin().rpc("run_matching")).data).toBe(0); // b still strict
     expect((await b.client.rpc("set_broaden", { p_level: "relaxed" })).error).toBeNull();
-    expect((await admin().rpc("run_matching")).data).toBe(0); // 0.4 < 0.5 relaxed threshold
+    expect((await admin().rpc("run_matching")).data).toBe(0); // 0.094 < 0.2 relaxed threshold
     expect((await a.client.rpc("set_broaden", { p_level: "any" })).error).toBeNull();
     expect((await admin().rpc("run_matching")).data).toBe(0); // b is only 'relaxed'
     expect((await b.client.rpc("set_broaden", { p_level: "any" })).error).toBeNull();

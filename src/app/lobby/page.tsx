@@ -39,7 +39,7 @@ export default async function LobbyPage() {
     supabase.from("availability_requests").select("id, status, expires_at, notify_email, created_at, paused_reason, broaden, session_start").in("status", ["waiting", "invited"]).maybeSingle(),
     supabase.from("invitation_participants").select("invitation_id, decision, match_invitations!inner(id, kind, status, expires_at, conversation_id)")
       .eq("account_id", auth.user.id).eq("match_invitations.status", "pending"),
-    supabase.from("profiles").select("timezone_override").eq("account_id", auth.user.id).maybeSingle(),
+    supabase.from("profiles").select("timezone_override, political_answers").eq("account_id", auth.user.id).maybeSingle(),
     supabase.from("reminder_prefs").select("push_enabled, email_enabled, mode, days, minutes_before, next_session_start").eq("account_id", auth.user.id).maybeSingle(),
     getScheduleConfig(),
   ]);
@@ -61,6 +61,7 @@ export default async function LobbyPage() {
       serverNow={now}
       timezoneOverride={profile?.timezone_override ?? null}
       reminderPrefs={(prefs as never) ?? null}
+      answeredCount={Object.keys((profile?.political_answers as Record<string, unknown>) ?? {}).length}
     />
   );
 }

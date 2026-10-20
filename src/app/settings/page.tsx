@@ -16,7 +16,7 @@ export default async function SettingsPage() {
   const { data: auth } = await supabase.auth.getUser();
   if (!auth.user) redirect("/login");
   const [{ data: profile }, { data: statsRows }, { data: prefs }, schedule] = await Promise.all([
-    supabase.from("profiles").select("age_band, region, community, life_context, share_context_with_prompts, political_answers, timezone_override").eq("account_id", auth.user.id).maybeSingle(),
+    supabase.from("profiles").select("age_band, region, community, life_context, share_context_with_prompts, political_answers, issue_priorities, timezone_override").eq("account_id", auth.user.id).maybeSingle(),
     supabase.rpc("my_stats"),
     supabase.from("reminder_prefs").select("push_enabled, email_enabled, mode, days, minutes_before, next_session_start").eq("account_id", auth.user.id).maybeSingle(),
     getScheduleConfig(),
@@ -71,7 +71,8 @@ export default async function SettingsPage() {
       <section className="card space-y-2 text-sm">
         <h2 className="font-semibold">About you</h2>
         <p className="muted">Age {profile?.age_band ?? "—"} · {profile?.region ?? "—"} · {profile?.community ?? "—"} · {profile?.life_context?.length ? profile.life_context.join(", ") : "no life context"}</p>
-        <p className="muted">Matching questionnaire: {answered} of 5 answered. Context sharing for questions: {profile?.share_context_with_prompts ? "on" : "off"}.</p>
+        <p className="muted">Matching questionnaire: {answered} of 8 answered{answered < 5 ? " (5 or more lets us find someone who differs from you)" : ""}. Issues that matter most: {profile?.issue_priorities?.length ? profile.issue_priorities.join(", ").replace(/_/g, " ") : "none picked"}.</p>
+        <p className="muted">Your answers are used only to pair you with someone who answered differently. They are never shown to the other person and never sent to the AI that writes conversation questions. Context sharing (life tags only): {profile?.share_context_with_prompts ? "on" : "off"}.</p>
         <a className="btn btn-secondary" href="/onboarding">Edit</a>
       </section>
 

@@ -11,7 +11,7 @@ export const admin = () => createClient(URL_, SERVICE, { auth: { persistSession:
 
 export type TestUser = { id: string; email: string; client: SupabaseClient };
 
-export async function makeUser(tag: string, answers: Record<string, number>, onboard = true): Promise<TestUser> {
+export async function makeUser(tag: string, answers: Record<string, number>, onboard = true, extra: { nonanswers?: Record<string, "unsure" | "declined">; priorities?: string[] } = {}): Promise<TestUser> {
   const email = `${tag}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}@test.local`;
   const password = "test-password-" + Math.random().toString(36).slice(2);
   const a = admin();
@@ -23,7 +23,8 @@ export async function makeUser(tag: string, answers: Record<string, number>, onb
   if (onboard) {
     const { error: e3 } = await client.rpc("complete_onboarding", {
       p_age_band: "25-34", p_region: "midwest", p_community: "suburban", p_life_context: ["parent"],
-      p_share_context: false, p_political_answers: answers, p_terms_version: "test",
+      p_share_context: false, p_political_answers: answers, p_political_nonanswers: extra.nonanswers ?? {},
+      p_issue_priorities: extra.priorities ?? [], p_questionnaire_version: 2, p_terms_version: "test",
     });
     if (e3) throw e3;
   }
@@ -34,9 +35,13 @@ export async function deleteUser(u: TestUser) {
   await admin().auth.admin.deleteUser(u.id);
 }
 
-export const LEFT = { gov_role: -2, tradition: -2, immigration: -2, economy: -2, institutions: -2 };
-export const RIGHT = { gov_role: 2, tradition: 2, immigration: 2, economy: 2, institutions: 2 };
-export const MIXED = { gov_role: 0, tradition: 1, immigration: -1 };
+// Questionnaire v2 fixtures: normalized 0..1 per question key.
+export const KEYS = ["public_services", "high_income_taxes", "healthcare", "legal_immigration", "deportations", "abortion", "gun_purchases", "climate"];
+const fill = (v: number, keys = KEYS) => Object.fromEntries(keys.map((k) => [k, v]));
+export const LEFT = fill(0);            // all "first option"
+export const RIGHT = fill(1);           // all "last option"
+export const MIXED = { public_services: 0.5, high_income_taxes: 0.75, healthcare: 0.25, legal_immigration: 0.5, deportations: 0.5 }; // 5 answers, moderate
+export const FEW = { public_services: 1, high_income_taxes: 1, healthcare: 1, legal_immigration: 1 }; // only 4 answers
 
 // Tests share one database; clear live queue state so an earlier test's
 // waiter is not paired by a later test (oldest-first matching is by design).

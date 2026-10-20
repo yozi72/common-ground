@@ -19,9 +19,11 @@ if (e0) throw e0;
 const me = createClient(URL_, ANON, { auth: { persistSession: false } });
 await me.auth.signInWithPassword({ email, password });
 const myId = created.user.id;
+const KEYS = ["public_services", "high_income_taxes", "healthcare", "legal_immigration", "deportations", "abortion", "gun_purchases", "climate"];
 await me.rpc("complete_onboarding", {
   p_age_band: "45-54", p_region: "south", p_community: "rural", p_life_context: ["veteran", "parent"],
-  p_share_context: false, p_political_answers: { gov_role: 2, tradition: 2, immigration: 2, economy: 2, institutions: 2 }, p_terms_version: "pilot-v1",
+  p_share_context: false, p_political_answers: Object.fromEntries(KEYS.map((k) => [k, 1])), p_political_nonanswers: {}, p_issue_priorities: [],
+  p_questionnaire_version: 2, p_terms_version: "pilot-v1",
 });
 log("partner account ready:", email);
 

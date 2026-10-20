@@ -18,7 +18,7 @@ const ANY_AFTER_MS = 120_000;
 
 export function Lobby(props: {
   userId: string; initialRequest: Request; initialInvitations: Invitation[]; emailAvailable: boolean; pushAvailable: boolean; vapidKey: string | null;
-  schedule: ScheduleConfig; initialSession: SessionState; serverNow: number; timezoneOverride: string | null; reminderPrefs: ReminderPrefs | null;
+  schedule: ScheduleConfig; initialSession: SessionState; serverNow: number; timezoneOverride: string | null; reminderPrefs: ReminderPrefs | null; answeredCount?: number;
 }) {
   const router = useRouter();
   const { now, sync, tick } = useServerClock(props.serverNow);
@@ -152,6 +152,12 @@ export function Lobby(props: {
             <Stat label="New matches close in" value={session.phase === "open" ? formatCountdown(session.msUntilEnd) : "closed"} />
           </div>
           <p className="muted text-xs text-center">Keep this page open: we only pair people who are here right now.</p>
+          {(props.answeredCount ?? 8) < 5 && request.broaden !== "any" && (
+            <div className="notice notice-warn space-y-2">
+              <p>You&apos;ve answered {props.answeredCount ?? 0} of 8 matching questions. With fewer than 5 we can&apos;t tell who differs from you, so matching only works with &ldquo;anyone available&rdquo;. You can add answers in <Link className="underline" href="/onboarding">Profile</Link>.</p>
+              <button className="btn btn-secondary" disabled={busy} onClick={() => broaden("any")}>Match me with anyone available</button>
+            </div>
+          )}
           {waitedMs >= RELAXED_AFTER_MS && request.broaden === "strict" && (
             <div className="notice notice-warn space-y-2">
               <p>Still looking. Would you accept someone whose answers differ from yours a little less?</p>

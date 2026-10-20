@@ -8,7 +8,7 @@ export default function Privacy() {
       </section>
       <section className="space-y-2">
         <h2 className="font-medium text-lg">Before a message is delivered</h2>
-        <p>Every message is held and reviewed before the other person can see it. Review combines rule-based checks (for things like phone numbers and links) with, when configured, an AI review. Neither is perfect. If a message is held, you'll see why and can revise, cancel, or appeal. The other person never sees held content.</p>
+        <p>The AI that writes shared questions receives only: the conversation stage, the questions already asked or skipped, recent approved messages, and, if you both opted in, your coarse life-context tags. Every message is held and reviewed before the other person can see it. Review combines rule-based checks (for things like phone numbers and links) with, when configured, an AI review. Neither is perfect. If a message is held, you'll see why and can revise, cancel, or appeal. The other person never sees held content.</p>
       </section>
       <section className="space-y-2">
         <h2 className="font-medium text-lg">What we keep and for how long</h2>
@@ -16,7 +16,7 @@ export default function Privacy() {
           <li>Delivered messages: deleted 30 days after a conversation ends.</li>
           <li>Held or blocked messages: deleted after 7 days (longer if under appeal).</li>
           <li>Reports: kept up to a year for safety review.</li>
-          <li>Your matching questionnaire answers: only you can see them. They are never shown to another person.</li>
+          <li>Your matching questionnaire answers and the issues you marked as mattering most: used only to pair you with someone who answered differently (we compare answers issue by issue; there is no left/right score or label). Only you can see them. They are never shown to another person, never included in notifications or analytics, and never sent to the AI that writes conversation questions.</li>
           <li>Deleting your account removes your account, profile, messages, and connections immediately.</li>
         </ul>
       </section>

@@ -18,7 +18,7 @@ Short status for anyone reviewing this codebase (including an AI reviewer). Upda
 - **Metrics (Review → Metrics):** queue joins, time to invitation (p50/p90), time until both accept, % starting within 2 minutes, unmatched leaves and rate, missed/declined invitations, broadening, reminder opt-ins and delivery outcomes. No conversation text or answers.
 
 - Email magic-link sign-in (Supabase Auth, custom SMTP via Gmail for the pilot).
-- Onboarding: adult attestation, consent, coarse profile, 5-item questionnaire (one question per screen, slider).
+- Onboarding: adult attestation, consent, coarse profile, 8-item policy questionnaire v2 (one question per screen, explicit labelled options, nothing preselected, separate “Not sure” / “Prefer not to answer” / skip), optional top-two issue priorities.
 - Waiting list → block-aware matching on questionnaire difference → two-party invitation with 3-minute expiry → conversation.
 - Opening round of 10 shared questions with 3 generated choices + custom answer; answers hidden until both respond; skip.
 - Open chat with mid-conversation questions on an activity-based backoff.
@@ -38,7 +38,7 @@ Short status for anyone reviewing this codebase (including an AI reviewer). Upda
 - **Realtime in production:** lobby and conversation screens poll (10 s / 5 s) and also subscribe to Supabase Realtime; the subscription has not been separately verified on the hosted project (polling covers it). Background/hidden tabs are throttled by browsers, so a tab left in the background may update slowly until it is focused.
 - **Question-after-reveal latency:** 3–10 s in dev (server `after()` hook + 5 s polling fallback); realtime should be faster in production but hasn't been measured there.
 - **Design:** the warm/rounded light theme now covers every screen (landing, sign-in, onboarding, Talk, conversation, reflection, Friends, Profile, Review). Screenshots in `docs/screenshots/`. Dark theme exists but is untested after the redesign.
-- **Questionnaire wording and the 15-question fallback bank** are first drafts (`src/lib/political.ts`, `src/lib/ai/questionBank.ts`).
+- **Questionnaire v2 is an initial product questionnaire and an ordinal matching heuristic, not a validated political assessment.** Scores are not party labels, vote predictions or certainty estimates; thresholds are provisional (below). The 15-question fallback bank is still a first draft.
 - **Single reviewer**, no SLA for held messages beyond the sender's ability to cancel.
 - Aliases are random adjective+noun; the same noun can appear for both people in a conversation (cosmetic).
 
@@ -78,6 +78,28 @@ All nine findings were confirmed and fixed in `2c165c7` (migration `0004_review_
 
 **Live two-user test on the deployed app (2026-10-20, after `2c165c7`):** user A in a browser, user B via `scripts/qa-partner.mjs` against the hosted project. Observed: match formed; B accepted first and the conversation did *not* open until A accepted (fix 2); AI-generated question 1; A's custom answer with a phone number was held by the real model with an explanation and a rewording; accepting it delivered the reworded text and revealed both answers; question 2 generated; leave → reflection; both said yes → "You both said yes" and the partner listed under Friends. Test accounts were deleted afterwards.
 
+## Questionnaire v2 — schema, scoring, thresholds
+
+**Version:** `profiles.questionnaire_version = 2` (migration 0006). Pairs are only compared when versions match.
+
+**Questions (8):** public services, higher-income taxes, healthcare responsibility, legal immigration, deportations, abortion (4 options), gun purchases, climate limits. Definitions in `src/lib/political.ts`.
+
+**Answer schema (per profile):**
+- `political_answers` jsonb `{key: value}` — substantive answers only, normalized to 0..1 by option index / (options − 1): a 5-option question gives 0, .25, .5, .75, 1; the 4-option abortion question gives 0, ⅓, ⅔, 1. An explicit middle option (“Stay about the same”, “Neither…”) is a substantive 0.5.
+- `political_nonanswers` jsonb `{key: "unsure" | "declined"}` — stored separately; never a midpoint.
+- Untouched questions appear in neither (nothing is preselected, so an untouched control can't become an answer).
+- `issue_priorities` text[] (≤2 keys) — collected for evaluation; **not used in matching and not sent to the model**.
+
+**Pair score:** mean absolute distance over shared substantive answers, equal weight per question, symmetric; per-issue distances and the shared count are kept internally (`metric_events.meta` on invitations). Fewer than `min_shared_answers` (5) shared answers → **insufficient information** (score null): the pair is neither “different” nor “similar”; they can still match only if **both** chose “anyone available”. People with fewer than five answers may choose “anyone available” immediately.
+
+**Provisional thresholds (policy_config):** `min_difference_score` 0.40 (strict, default), `relaxed_difference_score` 0.20 (after consent at 60 s), “anyone” 0 (after consent at 120 s; immediate when answers are insufficient). The stricter of the two people's preferences applies. Examples: all-first-option vs all-last-option = 1.0 (matches); “somewhat” vs opposite “somewhat” on every question (.25 vs .75) = 0.5 (matches strict); one step apart on every 5-option question (.25) → relaxed only; identical = 0 → “anyone” only; 4 shared answers, all opposite → insufficient. These values are starting points, not validated cut-offs.
+
+**Existing users:** there were no real users; migration 0006 cleared questionnaire data, set `questionnaire_version = 2`, set `onboarding_complete = false`, and cancelled live queue entries/pending invitations. Accounts, roles, consent history, conversations and friendships were kept. Everyone goes through the normal onboarding once (no special re-onboarding flow). Verified by test “existing accounts keep their data when they complete the new questionnaire”.
+
+**What the question-generation model receives (unchanged):** conversation stage and sequence number, previously asked questions, skipped questions, the last ~10 approved messages by alias, and — only when **both** participants consented — each person's coarse life-context tags. Nothing else from profiles: no political answers, priorities, age, region, community, email or ids. Enforced by `buildQuestionInput()` (`src/lib/workers/questions.ts`) and covered by the test “political answers and priorities never reach the question model”.
+
+**Measurement limitations:** ordinal answers treated as equally spaced; equal weights; a single mean hides which issues differ; eight questions are a narrow slice of political views; “not sure” and “declined” are indistinguishable from each other in matching (both excluded). Treat the score as a pairing heuristic only.
+
 ## Session schedule & reminders — configuration
 
 - Change the schedule in Review → Policy (`session_days` as `[0..6]`, `session_start_time` `"HH:MM"`, `session_duration_minutes`, `session_timezone` IANA). All surfaces read the same values; downloaded calendar events do **not** update themselves.
@@ -86,6 +108,8 @@ All nine findings were confirmed and fixed in `2c165c7` (migration `0004_review_
 - Scheduler: `worker_config` rows `tick_url` and `cron_secret` on the hosted database (set via service role); the cron job `common-ground-tick` is created by migration 0005.
 
 ## Change log
+
+- 2026-10-20 — Questionnaire v2 (8 policy questions, explicit non-answers, issue priorities), normalized per-issue scoring with a 5-answer minimum overlap, new thresholds, fresh start of questionnaire data; AI inputs unchanged and now test-pinned. 69 tests.
 
 - 2026-10-20 — Daily session, readiness matching, broadening, reminders, metrics, DB scheduler (see sections above). 61 automated tests: schedule (PDT/PST, Arizona, Hawaii, Tokyo date rollover, midnight crossing, weekday-only, spring-forward, reminder window), calendar recurrence/UID/Google link, reminder idempotency/retries/stale/unsubscribe/next-only/shared device, session gating and close, invitation grace at close, nonresponder pause + priority + avoid, stale presence, broadening consent + mutual preference, block at acceptance, plus all earlier security/privacy tests. Not independently tested: push delivery on a physical phone; a real two-user run during a live 6 pm Pacific session (the local two-user flow and the earlier live run cover the mechanics).
 

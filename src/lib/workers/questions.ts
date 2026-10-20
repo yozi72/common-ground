@@ -4,6 +4,22 @@
 import "server-only";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { generateQuestion } from "@/lib/ai/gateway";
+import type { QuestionInput } from "@/lib/ai/schemas";
+
+// Pure: the exact inputs the question model may see. Life-context tags only
+// when both participants consented; nothing else from profiles.
+export function buildQuestionInput(args: {
+  phase: "opening" | "mid"; seq: number;
+  profiles: { life_context: string[] | null; share_context_with_prompts: boolean }[];
+  previous: string[]; skipped: string[]; recent: { alias: string; body: string }[];
+}): QuestionInput {
+  const bothConsented = args.profiles.length === 2 && args.profiles.every((p) => p.share_context_with_prompts);
+  return {
+    phase: args.phase, seq: args.seq,
+    sharedContext: bothConsented ? args.profiles.map((p) => ({ lifeContext: p.life_context ?? [] })) : null,
+    previousQuestions: args.previous, skippedQuestions: args.skipped, recent: args.recent,
+  };
+}
 
 export async function generateNextQuestion(conversationId: string, phase: "opening" | "mid") {
   const admin = supabaseAdmin();
@@ -26,13 +42,11 @@ export async function generateNextQuestion(conversationId: string, phase: "openi
 
   const aliasOf = new Map((aliases ?? []).map((a) => [a.participant_id, a.alias]));
   const accountIds = (participants ?? []).map((p) => p.account_id);
+  // Only the two consent-gated coarse fields are selected; political answers and priorities are never read here.
   const { data: profiles } = await admin.from("profiles").select("life_context, share_context_with_prompts").in("account_id", accountIds);
-  const bothConsented = (profiles?.length ?? 0) === 2 && profiles!.every((p) => p.share_context_with_prompts);
-  const sharedContext = bothConsented ? profiles!.map((p) => ({ lifeContext: p.life_context ?? [] })) : null;
-
   const recent = (recentRows ?? []).reverse().map((m) => ({ alias: aliasOf.get(m.sender_participant_id) ?? "Someone", body: m.body }));
 
-  const q = await generateQuestion({ phase, seq: (conv.questions_asked ?? 0) + 1, sharedContext, previousQuestions: previous, skippedQuestions: skipped, recent });
+  const q = await generateQuestion(buildQuestionInput({ phase, seq: (conv.questions_asked ?? 0) + 1, profiles: profiles ?? [], previous, skipped, recent }));
 
   const { data: id, error } = await admin.rpc("insert_question", {
     p_conversation: conversationId,
