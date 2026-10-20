@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from "vitest";
-import { admin, makeUser, deleteUser, resetQueue, LEFT, RIGHT, MIXED, matchPair, openConversation, finishOpeningRound, type TestUser } from "./helpers";
+import { admin, makeUser, deleteUser, resetQueue, openSessionNow, closeSessions, LEFT, RIGHT, MIXED, matchPair, openConversation, finishOpeningRound, type TestUser } from "./helpers";
+import { sendDueReminders } from "@/lib/workers/reminders";
+import { sessionDueForReminder, DEFAULT_SCHEDULE } from "@/lib/schedule";
+import { getScheduleConfig } from "@/lib/schedule-config";
 import { processPendingBatch } from "@/lib/workers/moderation";
 import { generateNextQuestion } from "@/lib/workers/questions";
 
@@ -10,10 +13,12 @@ async function user(tag: string, answers: Record<string, number>, onboard = true
   return u;
 }
 
-beforeAll(() => {
+beforeAll(async () => {
   process.env.AI_PROVIDER = "mock";
+  await openSessionNow();
 });
 beforeEach(async () => {
+  await openSessionNow();
   await resetQueue();
 });
 afterAll(async () => {
@@ -578,6 +583,194 @@ describe("review regressions (2026-10-20)", () => {
     expect(open!.length).toBe(1);
     const direct = await admin().from("conversation_questions").insert({ conversation_id: conv, seq: 99, phase: "opening", question_text: "dup", choices: ["a", "b", "c"], source: "bank" });
     expect(direct.error?.code).toBe("23505");
+  });
+});
+
+describe("daily session, readiness, nonresponders, broadening", () => {
+  it("joining and matching only happen while a session is open; reconnection too", async () => {
+    const a = await user("ss-a", LEFT);
+    const b = await user("ss-b", RIGHT);
+    await closeSessions();
+    const r = await a.client.rpc("join_queue", { p_notify_email: false });
+    expect(r.error?.message).toMatch(/not open/);
+    await openSessionNow();
+    await a.client.rpc("join_queue", { p_notify_email: false });
+    await b.client.rpc("join_queue", { p_notify_email: false });
+    await closeSessions();
+    const { data: pairs } = await admin().rpc("run_matching");
+    expect(pairs).toBe(0);
+    // closing the session closes unmatched entries
+    await admin().rpc("expire_stale");
+    const { data: reqs } = await admin().from("availability_requests").select("status").in("account_id", [a.id, b.id]);
+    expect(reqs!.map((x) => x.status)).toEqual(["expired", "expired"]);
+    // reconnection requests are refused while closed
+    await openSessionNow();
+    const conv = await openConversation(a, b);
+    await a.client.rpc("leave_conversation", { p_conversation: conv });
+    await a.client.rpc("set_connection_decision", { p_conversation: conv, p_decision: true });
+    await b.client.rpc("set_connection_decision", { p_conversation: conv, p_decision: true });
+    const { data: conns } = await a.client.rpc("my_connections");
+    await closeSessions();
+    const rr = await a.client.rpc("request_reconnection", { p_connection: conns![0].connection_id });
+    expect(rr.error?.message).toMatch(/not open/);
+    await openSessionNow();
+    const { data: inv, error } = await a.client.rpc("request_reconnection", { p_connection: conns![0].connection_id });
+    expect(error).toBeNull();
+    const { data: row } = await admin().from("match_invitations").select("expires_at, created_at").eq("id", inv).single();
+    expect(Date.parse(row!.expires_at) - Date.parse(row!.created_at)).toBeLessThanOrEqual(61_000);
+  });
+
+  it("an invitation created before closing stays valid until its 60-second deadline", async () => {
+    const a = await user("ic-a", LEFT);
+    const b = await user("ic-b", RIGHT);
+    const { invitationId } = await matchPair(a, b);
+    const { data: row } = await admin().from("match_invitations").select("expires_at, created_at").eq("id", invitationId).single();
+    expect(Date.parse(row!.expires_at) - Date.parse(row!.created_at)).toBeLessThanOrEqual(61_000);
+    await closeSessions();
+    await a.client.rpc("respond_invitation", { p_invitation: invitationId, p_accept: true });
+    const { data: r } = await b.client.rpc("respond_invitation", { p_invitation: invitationId, p_accept: true });
+    expect(r.status).toBe("opened");
+  });
+
+  it("nonresponder is paused until ready; the responsive person keeps priority and avoids them", async () => {
+    const a = await user("nr-a", LEFT);
+    const b = await user("nr-b", RIGHT);
+    const c = await user("nr-c", RIGHT);
+    const { invitationId } = await matchPair(a, b);
+    const { data: before } = await admin().from("availability_requests").select("created_at").eq("account_id", a.id).single();
+    await a.client.rpc("respond_invitation", { p_invitation: invitationId, p_accept: true });
+    await admin().from("match_invitations").update({ expires_at: new Date(Date.now() - 1000).toISOString() }).eq("id", invitationId);
+    await admin().rpc("expire_stale");
+    const { data: ra } = await admin().from("availability_requests").select("status, paused_reason, created_at, avoid_account_ids").eq("account_id", a.id).single();
+    const { data: rb } = await admin().from("availability_requests").select("status, paused_reason").eq("account_id", b.id).single();
+    expect(ra).toMatchObject({ status: "waiting", paused_reason: null, created_at: before!.created_at });
+    expect(ra!.avoid_account_ids).toContain(b.id);
+    expect(rb).toMatchObject({ status: "waiting", paused_reason: "no_response" });
+    // b stays paused even with heartbeats; a is not re-paired with b; c (newer) gets a instead
+    await b.client.rpc("lobby_heartbeat");
+    const { data: rb2 } = await admin().from("availability_requests").select("paused_reason").eq("account_id", b.id).single();
+    expect(rb2!.paused_reason).toBe("no_response");
+    await c.client.rpc("join_queue", { p_notify_email: false });
+    await admin().rpc("run_matching");
+    const { data: ips } = await admin().from("invitation_participants").select("account_id, match_invitations!inner(status)").eq("match_invitations.status", "pending");
+    expect(new Set(ips!.map((x) => x.account_id))).toEqual(new Set([a.id, c.id]));
+    // b confirms readiness → eligible again
+    await b.client.rpc("confirm_ready");
+    const { data: rb3 } = await admin().from("availability_requests").select("paused_reason, paused_at").eq("account_id", b.id).single();
+    expect(rb3).toEqual({ paused_reason: null, paused_at: null });
+  });
+
+  it("stale presence pauses and a heartbeat resumes; a stale person is not matched", async () => {
+    const a = await user("sp-a", LEFT);
+    const b = await user("sp-b", RIGHT);
+    await a.client.rpc("join_queue", { p_notify_email: false });
+    await b.client.rpc("join_queue", { p_notify_email: false });
+    await admin().from("availability_requests").update({ last_seen_at: new Date(Date.now() - 120_000).toISOString() }).eq("account_id", b.id);
+    const { data: pairs } = await admin().rpc("run_matching");
+    expect(pairs).toBe(0);
+    await admin().rpc("expire_stale");
+    const { data: rb } = await admin().from("availability_requests").select("paused_reason").eq("account_id", b.id).single();
+    expect(rb!.paused_reason).toBe("stale");
+    await b.client.rpc("lobby_heartbeat");
+    const { data: pairs2 } = await admin().rpc("run_matching");
+    expect(pairs2).toBe(1);
+  });
+
+  it("broadening needs explicit consent after the waiting thresholds and respects both people's preferences", async () => {
+    const a = await user("br-a", { gov_role: -1, tradition: 0, immigration: 0, economy: 0, institutions: 0 });
+    const b = await user("br-b", { gov_role: 1, tradition: 0, immigration: 0, economy: 0, institutions: 0 }); // score 0.4
+    await a.client.rpc("join_queue", { p_notify_email: false });
+    await b.client.rpc("join_queue", { p_notify_email: false });
+    expect((await admin().rpc("run_matching")).data).toBe(0); // 0.4 < 1.0
+    const early = await a.client.rpc("set_broaden", { p_level: "relaxed" });
+    expect(early.error?.message).toMatch(/not yet/);
+    await admin().from("availability_requests").update({ created_at: new Date(Date.now() - 130_000).toISOString() }).in("account_id", [a.id, b.id]);
+    expect((await a.client.rpc("set_broaden", { p_level: "relaxed" })).error).toBeNull();
+    expect((await admin().rpc("run_matching")).data).toBe(0); // b still strict
+    expect((await b.client.rpc("set_broaden", { p_level: "relaxed" })).error).toBeNull();
+    expect((await admin().rpc("run_matching")).data).toBe(0); // 0.4 < 0.5 relaxed threshold
+    expect((await a.client.rpc("set_broaden", { p_level: "any" })).error).toBeNull();
+    expect((await admin().rpc("run_matching")).data).toBe(0); // b is only 'relaxed'
+    expect((await b.client.rpc("set_broaden", { p_level: "any" })).error).toBeNull();
+    expect((await admin().rpc("run_matching")).data).toBe(1);
+    // reversible
+    const c = await user("br-c", LEFT);
+    await c.client.rpc("join_queue", { p_notify_email: false });
+    await admin().from("availability_requests").update({ created_at: new Date(Date.now() - 130_000).toISOString() }).eq("account_id", c.id);
+    await c.client.rpc("set_broaden", { p_level: "any" });
+    expect((await c.client.rpc("set_broaden", { p_level: "strict" })).error).toBeNull();
+    const { data: rc } = await admin().from("availability_requests").select("broaden").eq("account_id", c.id).single();
+    expect(rc!.broaden).toBe("strict");
+  });
+
+  it("a block created after pairing stops the conversation from opening", async () => {
+    const a = await user("bl-a", LEFT);
+    const b = await user("bl-b", RIGHT);
+    const { invitationId } = await matchPair(a, b);
+    await admin().from("blocks").insert({ blocker_account_id: b.id, blocked_account_id: a.id });
+    await a.client.rpc("respond_invitation", { p_invitation: invitationId, p_accept: true });
+    const { data: r } = await b.client.rpc("respond_invitation", { p_invitation: invitationId, p_accept: true });
+    expect(r.status).toBe("declined");
+    const { data: convs } = await admin().from("conversations").select("id").eq("invitation_id", invitationId);
+    expect(convs).toEqual([]);
+  });
+});
+
+describe("reminders", () => {
+  it("sends once per (account, session, device), retries failures up to 3 times, respects unsubscribe, and never after the session starts", async () => {
+    const a = await user("rm-a", LEFT);
+    await a.client.from("reminder_prefs").upsert({ account_id: a.id, push_enabled: true, email_enabled: false, mode: "daily", days: [0, 1, 2, 3, 4, 5, 6], minutes_before: 10 });
+    const { data: subId } = await a.client.rpc("upsert_push_subscription", { p_endpoint: "https://push.invalid/sub-" + a.id, p_p256dh: "BPdummykeydummykeydummykey", p_auth: "authdummy", p_user_agent: "test" });
+    const cfg = await getScheduleConfig();
+    // a time inside the reminder window for the next configured session
+    const nextStart = (await import("@/lib/schedule")).nextSessions(Date.now() + 3 * 3600_000, 1, cfg)[0].start;
+    const at = nextStart - 9 * 60_000;
+    expect(sessionDueForReminder(at, 10, cfg)?.start).toBe(nextStart);
+    const r1 = await sendDueReminders(at);
+    const r2 = await sendDueReminders(at); // overlapping run
+    const { data: sends } = await admin().from("reminder_sends").select("status, attempts, target").eq("account_id", a.id);
+    expect(sends!.length).toBe(1);
+    expect(sends![0].target).toBe(subId);
+    expect(["failed", "sent"]).toContain(sends![0].status); // bogus endpoint fails; a real one would send
+    expect(r1.push.sent + r1.push.failed + r1.push.skipped + r1.push.disabled).toBe(1);
+    expect(sends![0].attempts).toBeLessThanOrEqual(3);
+    void r2;
+    // bounded retries
+    await sendDueReminders(at); await sendDueReminders(at); await sendDueReminders(at);
+    const { data: sends2 } = await admin().from("reminder_sends").select("attempts").eq("account_id", a.id).single();
+    expect(sends2!.attempts).toBeLessThanOrEqual(3);
+    // stale: after the session started nothing is sent for it
+    const b = await user("rm-b", RIGHT);
+    await b.client.from("reminder_prefs").upsert({ account_id: b.id, push_enabled: true, mode: "daily", minutes_before: 10 });
+    await b.client.rpc("upsert_push_subscription", { p_endpoint: "https://push.invalid/sub-" + b.id, p_p256dh: "BPdummykeydummykeydummykey", p_auth: "authdummy", p_user_agent: "test" });
+    await sendDueReminders(nextStart + 1000);
+    const { data: sendsB } = await admin().from("reminder_sends").select("id").eq("account_id", b.id);
+    expect(sendsB).toEqual([]);
+    // unsubscribe → no device → nothing sent
+    await b.client.rpc("remove_push_subscription", { p_endpoint: "https://push.invalid/sub-" + b.id });
+    await sendDueReminders(at);
+    const { data: sendsB2 } = await admin().from("reminder_sends").select("id").eq("account_id", b.id);
+    expect(sendsB2).toEqual([]);
+    // 'next session only' fires only for that session
+    const c = await user("rm-c", RIGHT);
+    await c.client.from("reminder_prefs").upsert({ account_id: c.id, push_enabled: true, mode: "next", next_session_start: new Date(nextStart + 86_400_000).toISOString(), minutes_before: 10 });
+    await c.client.rpc("upsert_push_subscription", { p_endpoint: "https://push.invalid/sub-" + c.id, p_p256dh: "BPdummykeydummykeydummykey", p_auth: "authdummy", p_user_agent: "test" });
+    await sendDueReminders(at);
+    const { data: sendsC } = await admin().from("reminder_sends").select("id").eq("account_id", c.id);
+    expect(sendsC).toEqual([]);
+    void DEFAULT_SCHEDULE;
+  });
+
+  it("a device endpoint belongs to one account at a time (shared devices)", async () => {
+    const a = await user("sd-a", LEFT);
+    const b = await user("sd-b", RIGHT);
+    const ep = "https://push.invalid/shared-" + a.id;
+    await a.client.rpc("upsert_push_subscription", { p_endpoint: ep, p_p256dh: "k1k1k1k1k1k1", p_auth: "auth1", p_user_agent: "t" });
+    await b.client.rpc("upsert_push_subscription", { p_endpoint: ep, p_p256dh: "k2k2k2k2k2k2", p_auth: "auth2", p_user_agent: "t" });
+    const { data: rows } = await admin().from("push_subscriptions").select("account_id").eq("endpoint", ep);
+    expect(rows!.map((r) => r.account_id)).toEqual([b.id]);
+    const { data: aView } = await a.client.from("push_subscriptions").select("id").eq("endpoint", ep);
+    expect(aView).toEqual([]);
   });
 });
 

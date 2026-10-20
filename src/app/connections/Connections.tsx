@@ -28,7 +28,7 @@ export function Connections({ initial }: { initial: Conn[] }) {
     <div className="space-y-6">
       <div>
         <h1 className="text-3xl font-semibold">Friends</h1>
-        <p className="muted text-sm mt-1">People you've both agreed to talk with again. Still aliases only; contact sharing isn't part of this pilot.</p>
+        <p className="muted text-sm mt-1">People you've both agreed to talk with again. Still aliases only; contact sharing isn't part of this pilot. Invitations can only be sent during the conversation hour, and the other person has 60 seconds to accept, so send one when you're both likely to be in Talk.</p>
       </div>
       {error && <div className="notice notice-bad" role="alert">{error}</div>}
       {list.length === 0 && <p className="card muted text-sm">No friends yet. After a conversation, you'll be asked privately whether you'd talk again; if you both say yes, they show up here.</p>}

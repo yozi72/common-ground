@@ -4,11 +4,14 @@ import "server-only";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { processPendingBatch, advanceAfterReveal } from "./moderation";
 import { sendQueuedEmails } from "./email";
+import { sendDueReminders } from "./reminders";
 import { generateNextQuestion } from "./questions";
 
-export async function runTick(opts: { retention?: boolean } = {}) {
+export async function runTick(opts: { retention?: boolean; source?: string } = {}) {
   const admin = supabaseAdmin();
   const out: Record<string, unknown> = {};
+  // heartbeat row so operators can see the scheduler is alive (Review → Metrics / SQL)
+  await admin.from("metric_events").insert({ kind: "worker_tick", meta: { source: opts.source ?? "unknown" } });
 
   const { data: stale, error: e1 } = await admin.rpc("expire_stale");
   out.expire = e1 ? { error: e1.message } : stale;
@@ -29,6 +32,7 @@ export async function runTick(opts: { retention?: boolean } = {}) {
 
   try { out.moderation = await processPendingBatch(20); } catch (e) { out.moderation = { error: (e as Error).message }; }
   try { out.email = await sendQueuedEmails(); } catch (e) { out.email = { error: (e as Error).message }; }
+  try { out.reminders = await sendDueReminders(); } catch (e) { out.reminders = { error: (e as Error).message }; }
 
   if (opts.retention) {
     const { data, error } = await admin.rpc("purge_retention");

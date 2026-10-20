@@ -17,7 +17,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
   const url = new URL(req.url);
-  const result = await runTick({ retention: url.searchParams.get("retention") === "1" });
+  const result = await runTick({ retention: url.searchParams.get("retention") === "1", source: req.headers.get("user-agent")?.includes("pg_net") ? "pg_cron" : "http" });
   return NextResponse.json({ ok: true, at: new Date().toISOString(), ...result });
 }
 

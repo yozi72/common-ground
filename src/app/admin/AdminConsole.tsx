@@ -9,9 +9,11 @@ type Appeal = { id: string; note: string | null; status: string; created_at: str
 type Cfg = { key: string; value: unknown };
 type Ctx = { id: string; conversation_id: string; sender_participant_id: string; body: string; created_at: string };
 
-export function AdminConsole({ review, reports, appeals, config, context, waiting }: { review: Review[]; reports: Report[]; appeals: Appeal[]; config: Cfg[]; context: Ctx[]; waiting: number }) {
+type Metrics = Record<string, number | string | null> | null;
+
+export function AdminConsole({ review, reports, appeals, config, context, waiting, metrics }: { review: Review[]; reports: Report[]; appeals: Appeal[]; config: Cfg[]; context: Ctx[]; waiting: number; metrics: Metrics }) {
   const router = useRouter();
-  const [tab, setTab] = useState<"messages" | "reports" | "appeals" | "config">("messages");
+  const [tab, setTab] = useState<"messages" | "reports" | "appeals" | "metrics" | "config">("messages");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -24,7 +26,7 @@ export function AdminConsole({ review, reports, appeals, config, context, waitin
     router.refresh();
   }
 
-  const tabs = [["messages", "Held messages", review.filter((r) => r.status === "review").length], ["reports", "Reports", reports.length], ["appeals", "Appeals", appeals.length], ["config", "Policy", 0]] as const;
+  const tabs = [["messages", "Held messages", review.filter((r) => r.status === "review").length], ["reports", "Reports", reports.length], ["appeals", "Appeals", appeals.length], ["metrics", "Metrics", 0], ["config", "Policy", 0]] as const;
 
   return (
     <div className="space-y-5">
@@ -105,6 +107,28 @@ export function AdminConsole({ review, reports, appeals, config, context, waitin
             </li>
           ))}
         </ul>
+      )}
+
+      {tab === "metrics" && (
+        <section className="space-y-3">
+          <p className="muted text-sm">Last 14 days. Operational only: no conversation text, no questionnaire answers. Waits are reported for people who were matched; the unmatched rate shows how many joined and left without a match.</p>
+          {!metrics ? <p className="card-flat muted text-sm">No data yet.</p> : (
+            <dl className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-sm">
+              {[
+                ["Queue joins", metrics.queue_joins], ["Sessions with joins", metrics.sessions_with_joins],
+                ["Invitations", metrics.invitations], ["Time to invitation p50 (s)", metrics.time_to_invitation_p50_s], ["Time to invitation p90 (s)", metrics.time_to_invitation_p90_s],
+                ["Conversations opened", metrics.conversations_opened], ["Time until both accept p50 (s)", metrics.time_to_both_accept_p50_s],
+                ["Started within 2 min", metrics.started_within_2min], ["Started within 2 min %", metrics.started_within_2min_pct],
+                ["Left unmatched", metrics.unmatched_leaves], ["Unmatched rate %", metrics.unmatched_rate_pct],
+                ["Invitations missed", metrics.invitations_missed], ["Invitations declined", metrics.invitations_declined],
+                ["Broadened match", metrics.broaden_selected], ["Chose 'anyone'", metrics.broaden_any],
+                ["Reminder opt-ins", metrics.reminder_optins], ["Reminders sent", metrics.reminders_sent], ["Reminders failed", metrics.reminders_failed], ["Reminders skipped", metrics.reminders_skipped],
+              ].map(([k, v]) => (
+                <div key={String(k)} className="card-flat"><dt className="muted text-xs">{k}</dt><dd className="text-lg font-semibold">{v == null ? "—" : typeof v === "number" ? Math.round(v * 10) / 10 : String(v)}</dd></div>
+              ))}
+            </dl>
+          )}
+        </section>
       )}
 
       {tab === "config" && (

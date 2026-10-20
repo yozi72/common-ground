@@ -28,6 +28,7 @@ export const env = {
   smtp: () => (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS
     ? { host: process.env.SMTP_HOST, port: Number(process.env.SMTP_PORT ?? 587), user: process.env.SMTP_USER, pass: process.env.SMTP_PASS, senderName: process.env.SMTP_SENDER_NAME ?? "Common Ground" }
     : null),
+  pushConfigured: () => !!(process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY),
   emailConfigured: () => !!(process.env.RESEND_API_KEY || (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS)),
   emailFrom: () => process.env.EMAIL_FROM ?? "Common Ground <noreply@example.com>",
   isProduction: () => process.env.NODE_ENV === "production",

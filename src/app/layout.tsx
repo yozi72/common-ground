@@ -10,6 +10,9 @@ const display = Fredoka({ subsets: ["latin"], weight: ["500", "600"], variable: 
 export const metadata: Metadata = {
   title: "Common Ground",
   description: "Anonymous, moderated text conversations between adults across political differences.",
+  manifest: "/manifest.json",
+  appleWebApp: { capable: true, title: "Common Ground", statusBarStyle: "default" },
+  icons: { icon: "/icon-192.png", apple: "/icon-192.png" },
 };
 
 export const viewport: Viewport = { width: "device-width", initialScale: 1, viewportFit: "cover", themeColor: "#fbf7f0" };

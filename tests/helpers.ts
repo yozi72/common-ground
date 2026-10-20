@@ -40,6 +40,24 @@ export const MIXED = { gov_role: 0, tradition: 1, immigration: -1 };
 
 // Tests share one database; clear live queue state so an earlier test's
 // waiter is not paired by a later test (oldest-first matching is by design).
+// Session control: tests open a 2-hour session window that started 30 min ago
+// (in the schedule timezone), or close all sessions.
+export async function openSessionNow(tz = "America/Los_Angeles") {
+  const a = admin();
+  const f = new Intl.DateTimeFormat("en-US", { timeZone: tz, hourCycle: "h23", hour: "2-digit", minute: "2-digit" });
+  const parts = Object.fromEntries(f.formatToParts(new Date(Date.now() - 30 * 60_000)).map((p) => [p.type, p.value]));
+  const start = `${parts.hour}:${parts.minute}`;
+  await a.from("policy_config").upsert([
+    { key: "session_days", value: [0, 1, 2, 3, 4, 5, 6] },
+    { key: "session_start_time", value: start },
+    { key: "session_duration_minutes", value: 120 },
+    { key: "session_timezone", value: tz },
+  ]);
+}
+export async function closeSessions() {
+  await admin().from("policy_config").upsert([{ key: "session_days", value: [] }]);
+}
+
 export async function resetQueue() {
   const a = admin();
   await a.from("availability_requests").update({ status: "cancelled", ended_at: new Date().toISOString() }).in("status", ["waiting", "invited"]);

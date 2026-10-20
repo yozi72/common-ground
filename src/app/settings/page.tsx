@@ -3,6 +3,11 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { DeleteAccount } from "./DeleteAccount";
 import { badgesFor, nextMilestone, type Stats } from "@/lib/badges";
 import { Lantern } from "@/components/Illustrations";
+import { ReminderControls } from "@/components/ReminderControls";
+import { TimezoneSetting } from "./TimezoneSetting";
+import { env } from "@/lib/env";
+import { getScheduleConfig, serverNow } from "@/lib/schedule-config";
+import { nextSessions } from "@/lib/schedule";
 
 export const dynamic = "force-dynamic";
 
@@ -10,10 +15,13 @@ export default async function SettingsPage() {
   const supabase = await createSupabaseServerClient();
   const { data: auth } = await supabase.auth.getUser();
   if (!auth.user) redirect("/login");
-  const [{ data: profile }, { data: statsRows }] = await Promise.all([
-    supabase.from("profiles").select("age_band, region, community, life_context, share_context_with_prompts, political_answers").eq("account_id", auth.user.id).maybeSingle(),
+  const [{ data: profile }, { data: statsRows }, { data: prefs }, schedule] = await Promise.all([
+    supabase.from("profiles").select("age_band, region, community, life_context, share_context_with_prompts, political_answers, timezone_override").eq("account_id", auth.user.id).maybeSingle(),
     supabase.rpc("my_stats"),
+    supabase.from("reminder_prefs").select("push_enabled, email_enabled, mode, days, minutes_before, next_session_start").eq("account_id", auth.user.id).maybeSingle(),
+    getScheduleConfig(),
   ]);
+  const upcoming = nextSessions(serverNow(), 1, schedule)[0] ?? null;
   const answered = profile ? Object.keys(profile.political_answers ?? {}).length : 0;
   const stats: Stats = (Array.isArray(statsRows) ? statsRows[0] : statsRows) ?? { people: 0, conversations: 0, friends: 0, full_rounds: 0, reconnections: 0 };
   const badges = badgesFor(stats);
@@ -51,6 +59,14 @@ export default async function SettingsPage() {
         </ul>
         <p className="muted text-xs">Badges are about taking part. The person you talk with only ever sees a rough tier, never your exact numbers.</p>
       </section>
+
+      <section id="reminders" className="card space-y-3">
+        <h2 className="font-semibold text-xl">Reminders</h2>
+        <p className="muted text-sm">The conversation hour is the same shared hour for everyone, every session day. Reminders are optional and you can turn them off here any time.</p>
+        <ReminderControls initial={(prefs as never) ?? null} schedule={schedule} pushAvailable={env.pushConfigured()} emailAvailable={env.emailConfigured()} vapidKey={process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY ?? null} nextSessionStartIso={upcoming ? new Date(upcoming.start).toISOString() : null} />
+      </section>
+
+      <TimezoneSetting override={profile?.timezone_override ?? null} />
 
       <section className="card space-y-2 text-sm">
         <h2 className="font-semibold">About you</h2>
