@@ -2,7 +2,7 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
-const PUBLIC_PATHS = ["/", "/login", "/auth", "/privacy"];
+const PUBLIC_PATHS = ["/", "/login", "/auth", "/privacy", "/manifest.json", "/sw.js", "/api/calendar"];
 
 export async function proxy(request: NextRequest) {
   let response = NextResponse.next({ request });
@@ -36,5 +36,5 @@ export async function proxy(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|ico|css|js)$).*)"],
+  matcher: ["/((?!_next/static|_next/image|favicon.ico|manifest.json|sw.js|.*\\.(?:svg|png|jpg|ico|css|js|json|webmanifest)$).*)"],
 };
