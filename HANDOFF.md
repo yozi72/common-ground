@@ -17,6 +17,7 @@ Short status for anyone reviewing this codebase (including an AI reviewer). Upda
 - Pre-delivery moderation: every message is `pending` until approved; states `approved / revise / blocked / review`; suggested rewordings only sent if the sender accepts; appeals; sender can cancel while waiting; outages fail closed (retry → human review).
 - Real model (Claude, `claude-opus-5-5`) for moderation and question generation when `AI_PROVIDER=anthropic`; deterministic contact/identity detectors always run. Probe results: `npm run probe` (19/20 agreement on a borderline set; 1.5–6 s per call).
 - Leave / block / report; partner-away notice (≤2 min); abandonment; reflection; mutual-consent "Friends" with reconnection under the same aliases; account + data deletion; retention purge.
+- Profile stats (people talked with, conversations, mutual friends) and 13 participation badges; the other participant sees only coarse tiers (`peer_badges`), never exact counts.
 - Admin review console at `/admin` for the `ADMIN_EMAIL` account (held messages, reports, appeals, policy knobs).
 - 27 integration tests against a local Supabase (`npm test`), lint, typecheck, production build.
 
@@ -51,6 +52,8 @@ Prerequisite: two email addresses you can read. Use two browsers or one normal +
 Local alternative without a second person: `node scripts/qa-partner.mjs` (with `.env.local` exported) plays the other side against a local Supabase. It is a test harness only, never a product feature.
 
 ## Change log
+
+- 2026-10-20 — Stats and badges: `account_stats`/`my_stats`/`peer_badges` functions (migration 0003, applied locally and on the hosted project), Profile page with counts, next-milestone line and badge grid, peer tier badges under the alias in the conversation header. Per-task model overrides `ANTHROPIC_MODEL_MODERATION` / `ANTHROPIC_MODEL_QUESTIONS`. 28 tests.
 
 - 2026-10-20 — Design pass 2: conversation (avatars, opening-round progress bar, revealed-answer cards with a “Same answer” badge, pill composer, intro card), reflection (illustrations, chip scales), Review console (pill tabs with counts). Phone fixes: question card no longer sticky on small screens; composer sits above the tab bar; Review tab in the bottom bar for admins.
 

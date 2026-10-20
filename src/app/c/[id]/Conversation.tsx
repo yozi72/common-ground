@@ -12,7 +12,7 @@ type Pending = { id: string; client_send_id: string; kind: "chat" | "answer"; qu
 
 const PENDING_CANCEL_AFTER_MS = 45_000;
 
-export function Conversation({ conversationId, myParticipantId, myAlias, peerAlias }: { conversationId: string; myParticipantId: string; myAlias: string; peerAlias: string }) {
+export function Conversation({ conversationId, myParticipantId, myAlias, peerAlias, peerBadges = [] }: { conversationId: string; myParticipantId: string; myAlias: string; peerAlias: string; peerBadges?: string[] }) {
   const router = useRouter();
   const [conv, setConv] = useState<Conv | null>(null);
   const [questions, setQuestions] = useState<Question[]>([]);
@@ -113,6 +113,11 @@ export function Conversation({ conversationId, myParticipantId, myAlias, peerAli
           <div className="min-w-0">
             <h1 className="text-xl font-semibold truncate">You &amp; {peerAlias}</h1>
             <p className="muted text-xs">You're {myAlias}. {conv.status === "opening" ? `Question ${Math.min(conv.questions_asked, conv.opening_question_count)} of ${conv.opening_question_count}` : "Open conversation"}</p>
+            {peerBadges.length > 0 && (
+              <ul className="flex flex-wrap gap-1 mt-1" aria-label={`About ${peerAlias}`}>
+                {peerBadges.map((b) => <li key={b} className="badge">{b}</li>)}
+              </ul>
+            )}
           </div>
         </div>
         <div className="relative">

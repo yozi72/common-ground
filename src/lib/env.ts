@@ -21,6 +21,9 @@ export const env = {
   aiProvider: () => (process.env.AI_PROVIDER === "anthropic" ? "anthropic" : "mock") as "anthropic" | "mock",
   anthropicApiKey: () => process.env.ANTHROPIC_API_KEY ?? null,
   anthropicModel: () => process.env.ANTHROPIC_MODEL ?? "claude-opus-5-5",
+  // Per-task overrides so cost can be tuned without a code change.
+  moderationModel: () => process.env.ANTHROPIC_MODEL_MODERATION ?? process.env.ANTHROPIC_MODEL ?? "claude-opus-5-5",
+  questionModel: () => process.env.ANTHROPIC_MODEL_QUESTIONS ?? process.env.ANTHROPIC_MODEL ?? "claude-opus-5-5",
   resendApiKey: () => process.env.RESEND_API_KEY ?? null,
   emailFrom: () => process.env.EMAIL_FROM ?? "Common Ground <noreply@example.com>",
   isProduction: () => process.env.NODE_ENV === "production",

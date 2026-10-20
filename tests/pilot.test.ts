@@ -445,6 +445,32 @@ describe("reflection and reconnection", () => {
   });
 });
 
+describe("stats and badges", () => {
+  it("counts people/conversations only after a revealed question; peers see tiers only; third parties see nothing", async () => {
+    const a = await user("st-a", LEFT);
+    const b = await user("st-b", RIGHT);
+    const c = await user("st-c", MIXED);
+    const conv = await openConversation(a, b);
+    let { data: s0 } = await a.client.rpc("my_stats");
+    expect(s0[0]).toMatchObject({ people: 0, conversations: 0, friends: 0 });
+    const qid = await generateNextQuestion(conv, "opening");
+    await a.client.rpc("answer_with_choice", { p_question: qid, p_choice: 0 });
+    await b.client.rpc("answer_with_choice", { p_question: qid, p_choice: 1 });
+    ({ data: s0 } = await a.client.rpc("my_stats"));
+    expect(s0[0]).toMatchObject({ people: 1, conversations: 1, friends: 0, full_rounds: 0 });
+    const { data: pb } = await b.client.rpc("peer_badges", { p_conversation: conv });
+    expect(pb[0]).toMatchObject({ people_tier: 1, friends_tier: 0, full_round: false, came_back: false });
+    expect(Object.keys(pb[0])).not.toContain("people"); // no exact counts
+    const { data: none } = await c.client.rpc("peer_badges", { p_conversation: conv });
+    expect(none).toEqual([]);
+    await a.client.rpc("leave_conversation", { p_conversation: conv });
+    await a.client.rpc("set_connection_decision", { p_conversation: conv, p_decision: true });
+    await b.client.rpc("set_connection_decision", { p_conversation: conv, p_decision: true });
+    const { data: s1 } = await a.client.rpc("my_stats");
+    expect(s1[0].friends).toBe(1);
+  });
+});
+
 describe("housekeeping and deletion", () => {
   it("expire_stale notifies about an away partner and ends abandoned conversations", async () => {
     const a = await user("h-a", LEFT);

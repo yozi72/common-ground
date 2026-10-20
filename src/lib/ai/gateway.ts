@@ -56,7 +56,7 @@ export async function moderate(input: ModerationInput): Promise<ModerationResult
     wrapUntrusted("pending_message", input.body),
   ].join("\n\n");
 
-  const raw = await callAnthropic(MODERATION_SYSTEM, userPrompt, 600);
+  const raw = await callAnthropic(MODERATION_SYSTEM, userPrompt, 600, env.moderationModel());
   const parsed = ModerationDecisionSchema.safeParse(extractJson(raw));
   if (!parsed.success) {
     // Invalid model output is a service failure: fail into pending/retry, never allow.
@@ -70,10 +70,10 @@ export async function moderate(input: ModerationInput): Promise<ModerationResult
       categories: [...new Set([...d.categories, "identifying_details"])],
       user_explanation: d.user_explanation ?? hits.map((h) => DETECTOR_EXPLANATIONS[h]).join(" "),
       suggested_revision: d.suggested_revision ?? null,
-      provider: "anthropic", model: env.anthropicModel(), detectorHits: hits, rawValid: true, latencyMs: Date.now() - started,
+      provider: "anthropic", model: env.moderationModel(), detectorHits: hits, rawValid: true, latencyMs: Date.now() - started,
     };
   }
-  return { ...d, provider: "anthropic", model: env.anthropicModel(), detectorHits: hits, rawValid: true, latencyMs: Date.now() - started };
+  return { ...d, provider: "anthropic", model: env.moderationModel(), detectorHits: hits, rawValid: true, latencyMs: Date.now() - started };
 }
 
 // The mock never pretends to be a model. It applies the deterministic detectors
@@ -130,7 +130,7 @@ export async function generateQuestion(input: QuestionInput): Promise<QuestionRe
   ].join("\n\n");
 
   try {
-    const raw = await callAnthropic(QUESTION_SYSTEM, userPrompt, 500);
+    const raw = await callAnthropic(QUESTION_SYSTEM, userPrompt, 500, env.questionModel());
     const parsed = GeneratedQuestionSchema.safeParse(extractJson(raw));
     if (parsed.success && choicesLookSafe(parsed.data.choices) && !input.previousQuestions.includes(parsed.data.shared_question)) {
       return { ...parsed.data, source: "ai", provider: "anthropic" };
@@ -179,7 +179,7 @@ export async function assessConnectionReadiness(input: {
 
 let anthropic: Anthropic | null = null;
 
-async function callAnthropic(system: string, user: string, maxTokens: number): Promise<string> {
+async function callAnthropic(system: string, user: string, maxTokens: number, model: string = env.anthropicModel()): Promise<string> {
   const key = env.anthropicApiKey();
   if (!key) throw new GatewayError("ANTHROPIC_API_KEY not configured", false);
   anthropic ??= new Anthropic({ apiKey: key, maxRetries: 2, timeout: 30_000 });
@@ -187,7 +187,7 @@ async function callAnthropic(system: string, user: string, maxTokens: number): P
     // Thinking is always on for current models; `effort: "low"` keeps these short
     // classification calls fast. Thinking tokens count toward max_tokens, hence the headroom.
     const res = await anthropic.beta.messages.create({
-      model: env.anthropicModel(),
+      model,
       max_tokens: Math.max(maxTokens, 4000),
       output_config: { effort: "low" },
       betas: ["server-side-fallback-2026-07-01"],

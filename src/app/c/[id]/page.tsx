@@ -1,6 +1,7 @@
 import { notFound, redirect } from "next/navigation";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { Conversation } from "./Conversation";
+import { peerBadgeLabels } from "@/lib/badges";
 
 export const dynamic = "force-dynamic";
 
@@ -21,5 +22,9 @@ export default async function ConversationPage({ params }: { params: Promise<{ i
 
   if (conv.status === "ended") redirect(`/c/${id}/reflect`);
 
-  return <Conversation conversationId={id} myParticipantId={me.id} myAlias={myAlias} peerAlias={peerAlias} />;
+  // Coarse participation tiers of the other person (never exact counts).
+  const { data: pb } = await supabase.rpc("peer_badges", { p_conversation: id });
+  const peerBadges = peerBadgeLabels((Array.isArray(pb) ? pb[0] : pb) ?? null);
+
+  return <Conversation conversationId={id} myParticipantId={me.id} myAlias={myAlias} peerAlias={peerAlias} peerBadges={peerBadges} />;
 }
