@@ -39,13 +39,13 @@ export default async function SettingsPage() {
           <h2 id="badges-title" className="font-semibold text-xl">Badges</h2>
           <span className="muted text-sm">{earned.length} of {badges.length}</span>
         </div>
-        <ul className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+        <ul className="grid grid-cols-4 sm:grid-cols-5 gap-2">
           {badges.map((b) => (
-            <li key={b.id} className="card-flat flex flex-col items-center text-center gap-1" style={{ opacity: b.earned ? 1 : 0.55 }} aria-label={`${b.name}${b.earned ? ", earned" : ", not yet"}`}>
+            <li key={b.id} className="flex flex-col items-center text-center gap-0.5 rounded-2xl p-2" style={{ opacity: b.earned ? 1 : 0.5, background: b.earned ? "var(--card)" : "transparent", border: b.earned ? "1px solid var(--line)" : "1px dashed var(--line)" }}
+              title={b.description} aria-label={`${b.name}: ${b.description}${b.earned ? ", earned" : b.progress ? `, ${b.progress}` : ", not yet"}`}>
               <BadgeIcon kind={b.kind} earned={b.earned} />
-              <p className="font-semibold text-sm">{b.name}</p>
-              <p className="muted text-xs">{b.description}</p>
-              {!b.earned && b.progress && <p className="text-xs" style={{ color: "var(--accent)" }}>{b.progress}</p>}
+              <p className="font-semibold text-[11px] leading-tight">{b.name}</p>
+              {!b.earned && b.progress && <p className="text-[10px]" style={{ color: "var(--accent)" }}>{b.progress}</p>}
             </li>
           ))}
         </ul>
@@ -73,8 +73,8 @@ export default async function SettingsPage() {
 
 function Stat({ n, label, sub }: { n: number; label: string; sub: string }) {
   return (
-    <div className="rounded-2xl py-3" style={{ background: "var(--bg-2)" }}>
-      <div className="text-3xl font-semibold" style={{ fontFamily: "var(--font-display)" }}>{n}</div>
+    <div className="rounded-2xl py-2" style={{ background: "var(--bg-2)" }}>
+      <div className="text-2xl font-semibold" style={{ fontFamily: "var(--font-display)" }}>{n}</div>
       <div className="text-sm font-semibold">{label}</div>
       <div className="muted text-xs">{sub}</div>
     </div>
@@ -85,7 +85,7 @@ function BadgeIcon({ kind, earned }: { kind: "people" | "friends" | "special"; e
   const fill = earned ? (kind === "people" ? "var(--accent-2)" : kind === "friends" ? "var(--sage-2)" : "var(--sun-2)") : "var(--bg-2)";
   const stroke = earned ? (kind === "people" ? "var(--accent)" : kind === "friends" ? "var(--sage)" : "var(--sun)") : "var(--line)";
   return (
-    <svg width="56" height="56" viewBox="0 0 56 56" aria-hidden="true">
+    <svg width="38" height="38" viewBox="0 0 56 56" aria-hidden="true">
       <path d="M28 4l6.5 4.5 7.8-.6 2.9 7.3 6.8 3.9-1.7 7.7 3.6 7-5.8 5.3-.5 7.9-7.7 1.5L28 52l-7.9-3.5-7.7-1.5-.5-7.9-5.8-5.3 3.6-7-1.7-7.7 6.8-3.9 2.9-7.3 7.8.6z" fill={fill} stroke={stroke} strokeWidth="2.5" strokeLinejoin="round" />
       {kind === "people" && <path d="M19 33c0-5 4-8 9-8s9 3 9 8M28 23a4 4 0 1 0 0-8 4 4 0 0 0 0 8z" fill="none" stroke={stroke} strokeWidth="2.5" strokeLinecap="round" />}
       {kind === "friends" && <path d="M28 36s-9-5.5-9-12a5 5 0 0 1 9-3 5 5 0 0 1 9 3c0 6.5-9 12-9 12z" fill="none" stroke={stroke} strokeWidth="2.5" strokeLinejoin="round" />}
