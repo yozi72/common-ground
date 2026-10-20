@@ -36,7 +36,7 @@ export function Lobby({ userId, initialRequest, initialInvitations }: { userId: 
     const ch = sb.channel(`lobby:${userId}`)
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "notifications", filter: `account_id=eq.${userId}` }, () => refresh())
       .subscribe();
-    const poll = setInterval(refresh, 10_000);
+    const poll = setInterval(() => { fetch("/api/cron/nudge", { method: "POST" }).catch(() => {}); refresh(); }, 10_000);
     const tick = setInterval(() => setNow(Date.now()), 1000);
     const tick0 = setTimeout(() => setNow(Date.now()), 0);
     return () => { sb.removeChannel(ch); clearInterval(poll); clearInterval(tick); clearTimeout(tick0); };

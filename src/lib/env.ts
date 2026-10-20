@@ -11,7 +11,11 @@ export const env = {
   supabaseUrl: () => req("NEXT_PUBLIC_SUPABASE_URL"),
   supabaseAnonKey: () => req("NEXT_PUBLIC_SUPABASE_ANON_KEY"),
   supabaseServiceRoleKey: () => req("SUPABASE_SERVICE_ROLE_KEY"),
-  siteUrl: () => process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000",
+  // Vercel sets VERCEL_PROJECT_PRODUCTION_URL on every deployment, so the site
+  // URL only needs to be configured explicitly on other hosts or custom domains.
+  siteUrl: () =>
+    process.env.NEXT_PUBLIC_SITE_URL
+    ?? (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : "http://localhost:3000"),
   adminEmail: () => process.env.ADMIN_EMAIL?.toLowerCase() ?? null,
   cronSecret: () => process.env.CRON_SECRET ?? null,
   aiProvider: () => (process.env.AI_PROVIDER === "anthropic" ? "anthropic" : "mock") as "anthropic" | "mock",

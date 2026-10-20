@@ -36,3 +36,14 @@ export async function runTick(opts: { retention?: boolean } = {}) {
   }
   return out;
 }
+
+// Hosts without minute-level cron (e.g. Vercel's free plan) still get timely
+// housekeeping: active clients call this through their heartbeat, and it runs a
+// tick at most once per interval per server instance.
+let lastOpportunisticTick = 0;
+export function maybeTick(minIntervalMs = 20_000) {
+  const now = Date.now();
+  if (now - lastOpportunisticTick < minIntervalMs) return Promise.resolve(null);
+  lastOpportunisticTick = now;
+  return runTick().catch((e) => { console.warn("[tick] opportunistic", (e as Error).message); return null; });
+}

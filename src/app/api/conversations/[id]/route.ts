@@ -1,5 +1,7 @@
 import { z } from "zod";
+import { after } from "next/server";
 import { handle, ok, parseBody, requireUser, fromRpcError, ApiError } from "@/lib/api";
+import { maybeTick } from "@/lib/workers/tick";
 
 const Body = z.discriminatedUnion("action", [
   z.object({ action: z.literal("heartbeat") }),
@@ -32,6 +34,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
       case "heartbeat": {
         const { error } = await supabase.rpc("heartbeat", { p_conversation: id });
         if (error) throw fromRpcError(error);
+        after(() => maybeTick());
         return ok();
       }
       case "leave": {
