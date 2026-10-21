@@ -775,7 +775,7 @@ describe("reminders", () => {
   it("sends once per (account, session, device), retries failures up to 3 times, respects unsubscribe, and never after the session starts", async () => {
     const a = await user("rm-a", LEFT);
     await a.client.from("reminder_prefs").upsert({ account_id: a.id, push_enabled: true, email_enabled: false, mode: "daily", days: [0, 1, 2, 3, 4, 5, 6], minutes_before: 10 });
-    const { data: subId } = await a.client.rpc("upsert_push_subscription", { p_endpoint: "https://push.invalid/sub-" + a.id, p_p256dh: "BPdummykeydummykeydummykey", p_auth: "authdummy", p_user_agent: "test" });
+    const { data: subId } = await a.client.rpc("upsert_push_subscription", { p_endpoint: "https://fcm.googleapis.com/fcm/send/test-" + a.id, p_p256dh: "BPdummykeydummykeydummykey", p_auth: "authdummy", p_user_agent: "test" });
     const cfg = await getScheduleConfig();
     // a time inside the reminder window for the next configured session
     const nextStart = (await import("@/lib/schedule")).nextSessions(Date.now() + 3 * 3600_000, 1, cfg)[0].start;
@@ -797,19 +797,19 @@ describe("reminders", () => {
     // stale: after the session started nothing is sent for it
     const b = await user("rm-b", RIGHT);
     await b.client.from("reminder_prefs").upsert({ account_id: b.id, push_enabled: true, mode: "daily", minutes_before: 10 });
-    await b.client.rpc("upsert_push_subscription", { p_endpoint: "https://push.invalid/sub-" + b.id, p_p256dh: "BPdummykeydummykeydummykey", p_auth: "authdummy", p_user_agent: "test" });
+    await b.client.rpc("upsert_push_subscription", { p_endpoint: "https://fcm.googleapis.com/fcm/send/test-" + b.id, p_p256dh: "BPdummykeydummykeydummykey", p_auth: "authdummy", p_user_agent: "test" });
     await sendDueReminders(nextStart + 1000);
     const { data: sendsB } = await admin().from("reminder_sends").select("id").eq("account_id", b.id);
     expect(sendsB).toEqual([]);
     // unsubscribe → no device → nothing sent
-    await b.client.rpc("remove_push_subscription", { p_endpoint: "https://push.invalid/sub-" + b.id });
+    await b.client.rpc("remove_push_subscription", { p_endpoint: "https://fcm.googleapis.com/fcm/send/test-" + b.id });
     await sendDueReminders(at);
     const { data: sendsB2 } = await admin().from("reminder_sends").select("id").eq("account_id", b.id);
     expect(sendsB2).toEqual([]);
     // 'next session only' fires only for that session
     const c = await user("rm-c", RIGHT);
     await c.client.from("reminder_prefs").upsert({ account_id: c.id, push_enabled: true, mode: "next", next_session_start: new Date(nextStart + 86_400_000).toISOString(), minutes_before: 10 });
-    await c.client.rpc("upsert_push_subscription", { p_endpoint: "https://push.invalid/sub-" + c.id, p_p256dh: "BPdummykeydummykeydummykey", p_auth: "authdummy", p_user_agent: "test" });
+    await c.client.rpc("upsert_push_subscription", { p_endpoint: "https://fcm.googleapis.com/fcm/send/test-" + c.id, p_p256dh: "BPdummykeydummykeydummykey", p_auth: "authdummy", p_user_agent: "test" });
     await sendDueReminders(at);
     const { data: sendsC } = await admin().from("reminder_sends").select("id").eq("account_id", c.id);
     expect(sendsC).toEqual([]);
@@ -819,13 +819,84 @@ describe("reminders", () => {
   it("a device endpoint belongs to one account at a time (shared devices)", async () => {
     const a = await user("sd-a", LEFT);
     const b = await user("sd-b", RIGHT);
-    const ep = "https://push.invalid/shared-" + a.id;
+    const ep = "https://fcm.googleapis.com/fcm/send/shared-" + a.id;
     await a.client.rpc("upsert_push_subscription", { p_endpoint: ep, p_p256dh: "k1k1k1k1k1k1", p_auth: "auth1", p_user_agent: "t" });
     await b.client.rpc("upsert_push_subscription", { p_endpoint: ep, p_p256dh: "k2k2k2k2k2k2", p_auth: "auth2", p_user_agent: "t" });
     const { data: rows } = await admin().from("push_subscriptions").select("account_id").eq("endpoint", ep);
     expect(rows!.map((r) => r.account_id)).toEqual([b.id]);
     const { data: aView } = await a.client.from("push_subscriptions").select("id").eq("endpoint", ep);
     expect(aView).toEqual([]);
+  });
+});
+
+describe("third review regressions (2026-10-20)", () => {
+  it("rejects push endpoints outside the known push services, at the database level", async () => {
+    const a = await user("pe-a", LEFT);
+    for (const ep of ["https://127.0.0.1/x", "http://fcm.googleapis.com/fcm/send/x", "https://example.com/push", "https://fcm.googleapis.com.evil.example/x", "https://user:pw@fcm.googleapis.com/x"]) {
+      const r = await a.client.rpc("upsert_push_subscription", { p_endpoint: ep, p_p256dh: "kkkkkkkkkkkk", p_auth: "aaaaaa", p_user_agent: "t" });
+      expect(r.error?.message, ep).toMatch(/unsupported push service/);
+    }
+    const ok = await a.client.rpc("upsert_push_subscription", { p_endpoint: "https://web.push.apple.com/abc" + a.id, p_p256dh: "kkkkkkkkkkkk", p_auth: "aaaaaa", p_user_agent: "t" });
+    expect(ok.error).toBeNull();
+  });
+
+  it("a person already in a conversation cannot be put into a second one via Friends or matching", async () => {
+    const a = await user("oc-a", LEFT);
+    const b = await user("oc-b", RIGHT);
+    const c = await user("oc-c", LEFT);
+    // b and c become friends first
+    const conv0 = await openConversation(b, c);
+    await b.client.rpc("leave_conversation", { p_conversation: conv0 });
+    await b.client.rpc("set_connection_decision", { p_conversation: conv0, p_decision: true });
+    await c.client.rpc("set_connection_decision", { p_conversation: conv0, p_decision: true });
+    const { data: conns } = await c.client.rpc("my_connections");
+    await resetQueue();
+    // b is now talking with a
+    const conv1 = await openConversation(a, b);
+    // c (free) invites b (busy): the sender check passes for c, b's acceptance must be refused
+    const { data: inv, error } = await c.client.rpc("request_reconnection", { p_connection: conns![0].connection_id });
+    expect(error).toBeNull();
+    const { data: r } = await b.client.rpc("respond_invitation", { p_invitation: inv, p_accept: true });
+    expect(r.status).toBe("declined");
+    const { data: active } = await admin().from("participants").select("conversation_id, conversations!participants_conversation_id_fkey!inner(status)").eq("account_id", b.id).is("left_at", null).neq("conversations.status", "ended");
+    expect(active!.map((x) => x.conversation_id)).toEqual([conv1]);
+    // a busy sender cannot even send a Friends invitation
+    const { error: e2 } = await b.client.rpc("request_reconnection", { p_connection: conns![0].connection_id });
+    expect(e2?.message).toMatch(/already in a conversation/);
+  });
+
+  it("simultaneous acceptances of two invitations for the same person open only one conversation", async () => {
+    const x = await user("sa-x", LEFT);
+    const y = await user("sa-y", RIGHT);
+    const z = await user("sa-z", RIGHT);
+    // x is friends with both y and z (two past conversations)
+    for (const f of [y, z]) {
+      const cv = await openConversation(x, f);
+      await x.client.rpc("leave_conversation", { p_conversation: cv });
+      await x.client.rpc("set_connection_decision", { p_conversation: cv, p_decision: true });
+      await f.client.rpc("set_connection_decision", { p_conversation: cv, p_decision: true });
+      await resetQueue();
+    }
+    const { data: ys } = await y.client.rpc("my_connections");
+    const { data: zs } = await z.client.rpc("my_connections");
+    const { data: inv1 } = await y.client.rpc("request_reconnection", { p_connection: ys![0].connection_id });
+    const { data: inv2 } = await z.client.rpc("request_reconnection", { p_connection: zs![0].connection_id });
+    const [r1, r2] = await Promise.all([
+      x.client.rpc("respond_invitation", { p_invitation: inv1, p_accept: true }),
+      x.client.rpc("respond_invitation", { p_invitation: inv2, p_accept: true }),
+    ]);
+    const opened = [r1.data, r2.data].filter((d) => d?.status === "opened");
+    expect(opened.length).toBe(1);
+    const { data: active } = await admin().from("participants").select("conversation_id, conversations!participants_conversation_id_fkey!inner(status)").eq("account_id", x.id).is("left_at", null).neq("conversations.status", "ended");
+    expect(active!.length).toBe(1);
+  });
+
+  it("the conversation_opened metric is recorded for both participants", async () => {
+    const a = await user("mt-a", LEFT);
+    const b = await user("mt-b", RIGHT);
+    await openConversation(a, b);
+    const { data: ev } = await admin().from("metric_events").select("account_id").eq("kind", "conversation_opened").in("account_id", [a.id, b.id]);
+    expect(new Set(ev!.map((e) => e.account_id))).toEqual(new Set([a.id, b.id]));
   });
 });
 

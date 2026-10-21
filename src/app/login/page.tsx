@@ -27,7 +27,7 @@ function LoginForm() {
       <Lantern className="w-36 h-auto mx-auto float" />
       <div className="text-center">
         <h1 className="text-3xl font-semibold">Sign in</h1>
-        <p className="muted text-sm mt-1">We'll email you a one-time link. No password. Your email is only used to sign you in and is never shown to other participants.</p>
+        <p className="muted text-sm mt-1">We'll email you a one-time link. No password. Your email is used to sign you in and, only if you choose, for session reminders. It's never shown to other participants.</p>
       </div>
       {state === "sent" ? (
         <div className="notice notice-ok" role="status">Check your inbox for a sign-in link. It expires in an hour.</div>

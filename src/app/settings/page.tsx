@@ -5,6 +5,7 @@ import { badgesFor, nextMilestone, type Stats } from "@/lib/badges";
 import { Lantern } from "@/components/Illustrations";
 import { ReminderControls } from "@/components/ReminderControls";
 import { TimezoneSetting } from "./TimezoneSetting";
+import { SignOutButton } from "@/components/SignOutButton";
 import { env } from "@/lib/env";
 import { getScheduleConfig, serverNow } from "@/lib/schedule-config";
 import { nextSessions } from "@/lib/schedule";
@@ -79,7 +80,7 @@ export default async function SettingsPage() {
       <section className="card space-y-2 text-sm">
         <h2 className="font-semibold">Your account</h2>
         <p className="muted">Signed in as {auth.user.email}. This is never shown to other participants.</p>
-        <form action="/auth/signout" method="post"><button className="btn btn-secondary">Sign out</button></form>
+        <SignOutButton className="btn btn-secondary" />
       </section>
 
       <DeleteAccount />

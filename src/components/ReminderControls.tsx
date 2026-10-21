@@ -2,6 +2,8 @@
 import { useEffect, useState } from "react";
 import { enablePush, disablePush, currentSubscription, pushSupport, isIOSDevice, type PushSupport } from "@/lib/push-client";
 import type { ScheduleConfig } from "@/lib/schedule";
+import { nextOnlyExpired } from "@/lib/reminder-state";
+import { supabaseBrowser } from "@/lib/supabase/client";
 
 export type ReminderPrefs = { push_enabled: boolean; email_enabled: boolean; mode: "next" | "weekdays" | "daily"; days: number[]; minutes_before: number; next_session_start: string | null };
 const DAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -23,17 +25,25 @@ export function ReminderControls({ initial, schedule, pushAvailable, emailAvaila
   const [msg, setMsg] = useState<{ kind: "ok" | "warn" | "bad"; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [showIosHelp, setShowIosHelp] = useState(false);
+  const [nowMs, setNowMs] = useState(0); // set after mount; 0 means "unknown yet" (treated as not expired)
 
   useEffect(() => {
     const t = setTimeout(() => {
+      setNowMs(Date.now());
       setSupport(pushSupport());
       setIsIOS(isIOSDevice());
-      currentSubscription().then((s) => setThisDevice(!!s)).catch(() => setThisDevice(false));
+      // "this device is set up" only if the browser subscription is registered to THIS account
+      currentSubscription().then(async (sub) => {
+        if (!sub) { setThisDevice(false); return; }
+        const { data } = await supabaseBrowser().from("push_subscriptions").select("id").eq("endpoint", sub.endpoint).is("disabled_at", null).limit(1);
+        setThisDevice(!!data?.length);
+      }).catch(() => setThisDevice(false));
     }, 0);
     return () => clearTimeout(t);
   }, []);
 
-  const dirty = !saved || JSON.stringify({ ...saved, next_session_start: null }) !== JSON.stringify({ ...draft, next_session_start: null });
+  const expired = nowMs > 0 && nextOnlyExpired(saved, nowMs);
+  const dirty = !saved || expired || JSON.stringify({ ...saved, next_session_start: null }) !== JSON.stringify({ ...draft, next_session_start: null });
 
   async function savePrefs() {
     setBusy(true); setMsg(null);
@@ -70,6 +80,8 @@ export function ReminderControls({ initial, schedule, pushAvailable, emailAvaila
 
   const calendarQuery = `mode=${draft.mode}&days=${draft.days.join(",")}`;
   const icsHref = `/api/calendar?${calendarQuery}`;
+  const calendarDays = draft.mode === "weekdays" ? draft.days.filter((d) => schedule.days.includes(d)) : schedule.days;
+  const calendarReady = calendarDays.length > 0;
 
   function onAppleCalendar(e: React.MouseEvent<HTMLAnchorElement>) {
     if (!isIOS) return; // Mac/other: the .ics opens directly
@@ -138,8 +150,9 @@ export function ReminderControls({ initial, schedule, pushAvailable, emailAvaila
           <button type="button" className="btn btn-secondary" disabled={busy} onClick={onEnablePush}>Enable phone notifications</button>
         )}
 
+        {expired && <p className="notice notice-warn text-sm" role="status">Your &ldquo;next session only&rdquo; reminder was for a session that has passed. Save again to be reminded about the next one{nextSessionStartIso ? "" : " (no upcoming session is scheduled)"}.</p>}
         <div className="flex items-center gap-3 flex-wrap">
-          <button type="button" className="btn btn-primary" disabled={busy || !dirty} onClick={savePrefs}>Save reminder preferences</button>
+          <button type="button" className="btn btn-primary" disabled={busy || !dirty} onClick={savePrefs}>{expired ? "Save for the next session" : "Save reminder preferences"}</button>
           {saved && !dirty && <span className="muted text-xs">Saved{saved.email_enabled || saved.push_enabled ? "" : " (email and phone reminders are off)"}.</span>}
         </div>
         {msg && <p className={`notice ${msg.kind === "ok" ? "notice-ok" : msg.kind === "warn" ? "notice-warn" : "notice-bad"} text-sm`} role="status">{msg.text}</p>}
@@ -153,12 +166,13 @@ export function ReminderControls({ initial, schedule, pushAvailable, emailAvaila
           <IosCalendarHelp onOpen={openPreview} onCancel={() => setShowIosHelp(false)} />
         ) : (
           <>
+            {!calendarReady && <p className="notice notice-warn text-sm">Pick at least one day above to add a calendar event.</p>}
             <div className="flex flex-wrap gap-2">
-              <a className="btn btn-primary" href={icsHref} onClick={onAppleCalendar}>Add to Apple Calendar</a>
-              <a className="btn btn-secondary" href={`${icsHref}&google=1`} target="_blank" rel="noopener">Add to Google Calendar</a>
+              <a className="btn btn-primary" href={icsHref} onClick={onAppleCalendar} aria-disabled={!calendarReady} style={!calendarReady ? { pointerEvents: "none", opacity: 0.5 } : undefined}>Add to Apple Calendar</a>
+              <a className="btn btn-secondary" href={`${icsHref}&google=1`} target="_blank" rel="noopener" aria-disabled={!calendarReady} style={!calendarReady ? { pointerEvents: "none", opacity: 0.5 } : undefined}>Add to Google Calendar</a>
             </div>
             <p className="muted text-xs">
-              <a className="underline" href={icsHref} download>Other calendars (.ics)</a>
+              {calendarReady ? <a className="underline" href={icsHref} download>Other calendars (.ics)</a> : <span>Other calendars (.ics)</span>}
               {isIOS && <> · <button type="button" className="underline" onClick={() => setShowIosHelp(true)}>Need help adding it?</button></>}
             </p>
           </>

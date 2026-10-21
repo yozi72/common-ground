@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { TabBar } from "./TabBar";
+import { SignOutButton } from "./SignOutButton";
 
 // Top bar on every screen; on phones the section links move into a bottom
 // tab bar (TabBar) so Talk / Friends / Profile are always one tap away.
@@ -27,11 +28,7 @@ export async function Nav() {
                 <li className="hidden sm:block"><Link className="btn btn-ghost px-3 py-2 min-h-0" href="/connections">Friends</Link></li>
                 <li className="hidden sm:block"><Link className="btn btn-ghost px-3 py-2 min-h-0" href="/settings">Profile</Link></li>
                 {isAdmin && <li className="hidden sm:block"><Link className="btn btn-ghost px-3 py-2 min-h-0" href="/admin">Review</Link></li>}
-                <li>
-                  <form action="/auth/signout" method="post">
-                    <button className="btn btn-secondary px-3 py-1.5 min-h-0 text-sm whitespace-nowrap">Sign out</button>
-                  </form>
-                </li>
+                <li><SignOutButton /></li>
               </>
             ) : (
               <li><Link className="btn btn-primary px-4 py-2 min-h-0" href="/login">Sign in</Link></li>

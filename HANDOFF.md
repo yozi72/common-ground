@@ -100,6 +100,19 @@ All nine findings were confirmed and fixed in `2c165c7` (migration `0004_review_
 
 **Measurement limitations:** ordinal answers treated as equally spaced; equal weights; a single mean hides which issues differ; eight questions are a narrow slice of political views; “not sure” and “declined” are indistinguishable from each other in matching (both excluded). Treat the score as a pairing heuristic only.
 
+## Third review (c64acf8) — status
+
+| # | Finding | Fix | Test |
+|---|---|---|---|
+| 1 (High) | Push endpoints accepted any URL (SSRF via the worker) | Allowlist of known push services over https (`src/lib/push-endpoint.ts`) enforced in the API, in `upsert_push_subscription` (migration 0007) and again right before sending; non-conforming stored rows disabled | `tests/push-endpoint.test.ts`, pilot “rejects push endpoints…” |
+| 2 (High) | A friend's invitation could open a second simultaneous conversation | `has_active_conversation()` checked for both people at acceptance and inside `open_conversation_for_invitation` under per-account advisory locks; Friends senders must be free; other pending invitations for the two are declined when one opens | pilot “cannot be put into a second one”, “simultaneous acceptances … only one” |
+| 3 | Selected-day calendar started on the wrong day; empty selection produced an event | First occurrence is the next selected session day (`firstSession`); no selection → 400 from `/api/calendar`, buttons disabled in the UI | calendar test “start on the next selected day…” |
+| 4 | “Next session only” reminders couldn't be renewed | Expired state shown with “Save for the next session” enabled (`src/lib/reminder-state.ts`) | `tests/reminder-state.test.ts` |
+| 5 | Edit profile started blank | Onboarding prefills saved profile, answers, non-answers, priorities and attestation | — (manual) |
+| 6 | Push stayed attached to the previous account on a shared browser | “This device is set up” only when the browser subscription is registered to the current account; Sign out detaches the device subscription first (`SignOutButton`) | pilot “endpoint belongs to one account” (+ manual) |
+| 7 | Success metric counted one participant | `conversation_opened` logged for both participants | pilot “metric is recorded for both participants” |
+| — | Sign-in page wording | mentions optional session reminders | — |
+
 ## Reminder setup (2026-10-20 update)
 
 - **Email reminders:** “Email me 10 minutes before the session.” is ON by default in first-time setup and is only activated by **Save reminder preferences** (visiting the page changes nothing). A saved opt-out is never re-enabled. Follows the chosen frequency (next session / selected days / every session). If the server has no email sender, the option shows “Email reminders aren't available on this server yet” instead of an enabled state. Every reminder email carries a signed one-click unsubscribe link (`/api/reminders/unsubscribe?t=…`, HMAC-bound to the account; sets `email_enabled=false` and logs a consent event).
@@ -117,6 +130,8 @@ All nine findings were confirmed and fixed in `2c165c7` (migration `0004_review_
 - Scheduler: `worker_config` rows `tick_url` and `cron_secret` on the hosted database (set via service role); the cron job `common-ground-tick` is created by migration 0005.
 
 ## Change log
+
+- 2026-10-20 — Third review fixes (push endpoint allowlist, one conversation per person, calendar first occurrence, reminder renewal, edit prefill, shared-device sign-out, both-side metric, sign-in wording). Migration 0007. 79 tests.
 
 - 2026-10-20 — Reminder setup: email default-on with explicit save and persisted opt-out, one-click unsubscribe in emails, Apple/Google buttons + Other calendars link, iPhone pre-preview guidance, honest confirmations. 70 tests.
 

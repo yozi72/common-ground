@@ -15,6 +15,7 @@ Pilot is live at https://common-ground-dusky-nine.vercel.app (commit d2f5eb9). W
 - **Admins skip onboarding and land on Review;** they can opt in to participate.
 
 ## Done
+- 2026-10-20 (third review): `src/lib/push-endpoint.ts` allowlist + SQL `is_allowed_push_endpoint` + send-time check (`reminders.ts`); migration `0007_review3_fixes.sql` (one active conversation per person via `has_active_conversation` + per-account advisory locks in `open_conversation_for_invitation`, Friends sender must be free, `conversation_opened` metric for both); `calendar.ts` `firstSession`/`effectiveDays` (next selected day, selection required, API 400); `reminder-state.ts` expiry + renewal UI; onboarding prefill from saved profile; `SignOutButton` unsubscribes push before sign-out; device-account check in `ReminderControls`; sign-in copy mentions reminders. Why: ChatGPT review of c64acf8. 79 tests.
 - 2026-10-20 (later): Reminder setup rework — `src/components/ReminderControls.tsx` (draft + explicit Save; email default ON for first-time, opt-out persisted; Apple/Google buttons + "Other calendars (.ics)"; iOS-only pre-preview help panel with `localStorage` key `cg-ios-calendar-help-seen` and "Need help adding it?"; no false "added" messages), `src/lib/unsubscribe.ts` + `src/app/api/reminders/unsubscribe/route.ts` (HMAC one-click unsubscribe, public path in `proxy.ts`), unsubscribe link in `src/lib/workers/reminders.ts`, `isIOSDevice()` in `src/lib/push-client.ts`. Why: user tapped the iOS checkmark instead of "Add To Calendar"; reviewer asked for default-on email and clearer activation.
 - Full pilot: schema (migrations 0001–0006), moderation pipeline, matching, chat, reflection, friends, admin console, deletion, retention.
 - External review fixes (membership lock-down, two-party acceptance, answer reveal at DB level, retention of custom answers, NULL-safe ownership, single open question, safe redirects, SMTP notices, Friends refresh).
@@ -39,6 +40,7 @@ Pilot is live at https://common-ground-dusky-nine.vercel.app (commit d2f5eb9). W
 - Reviewer coverage: held messages wait for the single admin.
 
 ## Gotchas
+- Test fixtures must use allowlisted push endpoints (e.g. `https://fcm.googleapis.com/fcm/send/test-…`); `push.invalid` is now rejected by the DB.
 - iOS calendar preview: the top-right check mark closes without saving; only the bottom "Add To Calendar" button saves. A hint was added under the calendar buttons (`src/components/ReminderControls.tsx`) after the user's real-device test (2026-10-20). The .ics itself rendered correctly on iPhone (18:00–19:00, repeats daily, 10-min alert, link).
 - `.env.local` is git-ignored; hosted keys live in `.vercel/hosted.env.local` and the prod cron secret in `.vercel/cron-secret.local` (both ignored). Vercel env: `--type config` for plain values; secrets default.
 - Supabase CLI is the npm one (`npx supabase`), logged in; `npx supabase db push --yes` works non-interactively. Set `PATH=/opt/homebrew/bin:$PATH` and `DOCKER_HOST=unix://$HOME/.colima/default/docker.sock` for local `migration up`.

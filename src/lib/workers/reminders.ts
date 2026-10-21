@@ -11,6 +11,7 @@ import { env } from "@/lib/env";
 import { getScheduleConfig } from "@/lib/schedule-config";
 import { sessionDueForReminder, formatSessionTime, partsWeekday } from "@/lib/schedule";
 import { unsubscribeToken } from "@/lib/unsubscribe";
+import { isAllowedPushEndpoint } from "@/lib/push-endpoint";
 
 const MAX_ATTEMPTS = 3;
 
@@ -50,6 +51,11 @@ export async function sendDueReminders(nowMs = Date.now()) {
           const claim = await claimSend(admin, p.account_id, sessionIso, "push", s.id);
           if (!claim) continue;
           if (!pushConfigured()) { await finish(admin, claim.id, "skipped", "push not configured"); out.push.skipped++; continue; }
+          if (!isAllowedPushEndpoint(s.endpoint)) {
+            // never contact an endpoint outside the allowlist, whatever is stored
+            await admin.from("push_subscriptions").update({ disabled_at: new Date().toISOString() }).eq("id", s.id);
+            await finish(admin, claim.id, "skipped", "endpoint not allowed"); out.push.skipped++; continue;
+          }
           try {
             const payload = JSON.stringify({ title: "Common Ground", body: `Tonight's conversation hour starts in ${lead} minutes.`, url: `${env.siteUrl()}/lobby`, tag: `session-${sessionIso}` });
             await webpush.sendNotification({ endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth } }, payload, { TTL: lead * 60, urgency: "high" });

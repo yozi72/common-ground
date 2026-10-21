@@ -2,6 +2,7 @@ import { z } from "zod";
 import { handle, ok, parseBody, requireUser, fromRpcError, ApiError } from "@/lib/api";
 import { env } from "@/lib/env";
 import { isValidTimeZone } from "@/lib/schedule";
+import { isAllowedPushEndpoint } from "@/lib/push-endpoint";
 
 const Body = z.discriminatedUnion("action", [
   z.object({
@@ -38,6 +39,7 @@ export async function POST(req: Request) {
       }
       case "subscribe": {
         if (!env.pushConfigured()) throw new ApiError(409, "Phone notifications aren't set up on this server yet");
+        if (!isAllowedPushEndpoint(b.endpoint)) throw new ApiError(400, "This browser's push service isn't supported");
         const { data, error } = await supabase.rpc("upsert_push_subscription", { p_endpoint: b.endpoint, p_p256dh: b.p256dh, p_auth: b.auth, p_user_agent: req.headers.get("user-agent") ?? "" });
         if (error) throw fromRpcError(error);
         return ok({ id: data });

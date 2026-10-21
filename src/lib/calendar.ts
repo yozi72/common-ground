@@ -45,11 +45,28 @@ export function calendarUid(mode: CalendarMode, days: number[], host: string) {
   return `common-ground-session-${key}@${host}`;
 }
 
+// Effective days for a mode: all session days for next/daily, the chosen
+// session days for weekdays. Returns null when nothing is selected.
+export function effectiveDays(mode: CalendarMode, days: number[], cfg: ScheduleConfig): number[] | null {
+  if (mode === "weekdays") {
+    const d = days.filter((x) => cfg.days.includes(x));
+    return d.length ? d : null;
+  }
+  return cfg.days.length ? cfg.days : null;
+}
+
+// First upcoming session that falls on one of the effective days.
+export function firstSession(mode: CalendarMode, days: number[], cfg: ScheduleConfig, nowMs: number): Session | null {
+  const eff = effectiveDays(mode, days, cfg);
+  if (!eff) return null;
+  return nextSessions(nowMs, 14, { ...cfg, days: eff })[0] ?? null;
+}
+
 export function buildIcs(opts: { mode: CalendarMode; days: number[]; cfg: ScheduleConfig; siteUrl: string; nowMs?: number }): string {
   const { mode, days, cfg, siteUrl } = opts;
   const now = opts.nowMs ?? Date.now();
-  const first: Session | undefined = nextSessions(now, 1, cfg)[0];
-  if (!first) throw new Error("no upcoming session");
+  const first: Session | null = firstSession(mode, days, cfg, now);
+  if (!first) throw new Error("no day selected");
   const host = new URL(siteUrl).host;
   const tzBlock = VTIMEZONES[cfg.timezone];
   const dtstart = tzBlock ? `DTSTART;TZID=${cfg.timezone}:${wallClock(first.start, cfg.timezone)}` : `DTSTART:${utcStamp(first.start)}`;
@@ -80,7 +97,8 @@ export function buildIcs(opts: { mode: CalendarMode; days: number[]; cfg: Schedu
 }
 
 export function googleCalendarUrl(opts: { mode: CalendarMode; days: number[]; cfg: ScheduleConfig; siteUrl: string; nowMs?: number }): string {
-  const first = nextSessions(opts.nowMs ?? Date.now(), 1, opts.cfg)[0];
+  const first = firstSession(opts.mode, opts.days, opts.cfg, opts.nowMs ?? Date.now());
+  if (!first) throw new Error("no day selected");
   const p = new URLSearchParams({
     action: "TEMPLATE",
     text: "Common Ground conversation hour",

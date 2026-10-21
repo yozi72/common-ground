@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabaseBrowser } from "@/lib/supabase/client";
 import { QUESTIONS, QUESTIONNAIRE_VERSION, UNSURE_LABEL, DECLINE_LABEL, LIFE_CONTEXT_OPTIONS, MIN_SHARED_ANSWERS, normalize, type Answers, type NonAnswers } from "@/lib/political";
@@ -27,6 +27,32 @@ export default function Onboarding() {
   const [priorities, setPriorities] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [loaded, setLoaded] = useState(false);
+
+  // Editing: start from what is already saved so unchanged answers are kept.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const sb = supabaseBrowser();
+      const [{ data: profile }, { data: account }] = await Promise.all([
+        sb.from("profiles").select("age_band, region, community, life_context, share_context_with_prompts, political_answers, political_nonanswers, issue_priorities, questionnaire_version").limit(1).maybeSingle(),
+        sb.from("accounts").select("onboarding_complete, adult_attested_at").limit(1).maybeSingle(),
+      ]);
+      if (cancelled) return;
+      if (profile) {
+        setAgeBand(profile.age_band ?? ""); setRegion(profile.region ?? ""); setCommunity(profile.community ?? "");
+        setContext(profile.life_context ?? []); setShareContext(!!profile.share_context_with_prompts);
+        if (profile.questionnaire_version === QUESTIONNAIRE_VERSION) {
+          setAnswers((profile.political_answers as Answers) ?? {});
+          setNonAnswers((profile.political_nonanswers as NonAnswers) ?? {});
+          setPriorities(profile.issue_priorities ?? []);
+        }
+      }
+      if (account?.onboarding_complete || account?.adult_attested_at) { setAdult(true); setTerms(true); }
+      setLoaded(true);
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   const answered = Object.keys(answers).length;
   const qIndex = screen - QUESTION_START;
@@ -43,6 +69,8 @@ export default function Onboarding() {
     if (error) { setError(error.message); return; }
     router.push("/lobby");
   }
+
+  if (!loaded) return <p className="muted">Loading…</p>;
 
   return (
     <div className="space-y-6">

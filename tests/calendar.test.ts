@@ -28,8 +28,21 @@ describe("calendar export", () => {
     expect(next).not.toMatch(/RRULE:FREQ=(DAILY|WEEKLY)/);
     const wk = buildIcs({ mode: "weekdays", days: [1, 3, 5], cfg: DEFAULT_SCHEDULE, siteUrl: SITE, nowMs: now });
     expect(wk).toContain("RRULE:FREQ=WEEKLY;BYDAY=MO,WE,FR");
-    const limited = buildIcs({ mode: "weekdays", days: [0, 6], cfg: { ...DEFAULT_SCHEDULE, days: [1, 2, 3, 4, 5] }, siteUrl: SITE, nowMs: Date.parse("2026-10-19T12:00:00Z") });
-    expect(limited).not.toMatch(/RRULE:FREQ=(DAILY|WEEKLY)/); // no overlap → single event
+    const limited = buildIcs({ mode: "weekdays", days: [0, 1], cfg: { ...DEFAULT_SCHEDULE, days: [1, 2, 3, 4, 5] }, siteUrl: SITE, nowMs: Date.parse("2026-10-19T12:00:00Z") });
+    expect(limited).toContain("RRULE:FREQ=WEEKLY;BYDAY=MO"); // Sunday isn't a session day; Monday remains
+  });
+
+  it("selected-day exports start on the next selected day and require a selection (review finding)", () => {
+    // now = Tuesday 2026-10-20 12:00Z; Friday selected → first occurrence Fri 2026-10-23 18:00 PDT
+    const ics = buildIcs({ mode: "weekdays", days: [5], cfg: DEFAULT_SCHEDULE, siteUrl: SITE, nowMs: now });
+    expect(ics).toContain("DTSTART;TZID=America/Los_Angeles:20261023T180000");
+    expect(ics).toContain("RRULE:FREQ=WEEKLY;BYDAY=FR");
+    const g = new URL(googleCalendarUrl({ mode: "weekdays", days: [5], cfg: DEFAULT_SCHEDULE, siteUrl: SITE, nowMs: now }));
+    expect(g.searchParams.get("dates")).toBe("20261024T010000Z/20261024T020000Z");
+    expect(() => buildIcs({ mode: "weekdays", days: [], cfg: DEFAULT_SCHEDULE, siteUrl: SITE, nowMs: now })).toThrow(/no day/);
+    expect(() => googleCalendarUrl({ mode: "weekdays", days: [], cfg: DEFAULT_SCHEDULE, siteUrl: SITE, nowMs: now })).toThrow(/no day/);
+    // days outside the session schedule are ignored; if none remain it is an error, not a Tuesday event
+    expect(() => buildIcs({ mode: "weekdays", days: [0, 6], cfg: { ...DEFAULT_SCHEDULE, days: [1, 2, 3, 4, 5] }, siteUrl: SITE, nowMs: now })).toThrow(/no day/);
   });
 
   it("uses a stable UID per choice so re-imports replace instead of duplicating", () => {
