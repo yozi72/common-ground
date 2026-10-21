@@ -1,10 +1,10 @@
 import { NextResponse } from "next/server";
 import { env } from "@/lib/env";
-import { runTick, TICK_MAX_DURATION_SECONDS } from "@/lib/workers/tick";
+import { runTick } from "@/lib/workers/tick";
 import { secretsEqual } from "@/lib/unsubscribe";
 
 export const dynamic = "force-dynamic";
-export const maxDuration = TICK_MAX_DURATION_SECONDS;
+export const maxDuration = 60; // must be a literal for Next; keep equal to TICK_MAX_DURATION_SECONDS in workers/tick.ts
 
 // Scheduler entry point (Vercel Cron, GitHub Actions, a `while true` loop in dev).
 // Protected by CRON_SECRET; in development an unset secret is allowed.
