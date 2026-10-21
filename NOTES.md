@@ -1,7 +1,7 @@
 # NOTES.md — running notes (updated after every change)
 
 ## Current goal
-Fourth-review fixes (migration 0010) built and tested (90 tests); committing, applying 0010 to the hosted project and deploying. Then waiting on the user's real-device tests (push, friend chat on two devices).
+Fourth-review fixes are live: commit f900e5c pushed, migration 0010 applied to the hosted project, Vercel production deployment Ready (https://common-ground-dusky-nine.vercel.app). Waiting on the user's real-device tests (push, friend chat on two devices).
 
 ## Decisions (with reasoning)
 - **Supabase + Next.js, local-first:** RLS gives per-row access checks; everything mutating goes through RPCs so race safety lives in SQL.
@@ -27,7 +27,7 @@ Fourth-review fixes (migration 0010) built and tested (90 tests); committing, ap
 - 69 automated tests; live two-user run on the deployed app (before v2).
 
 ## In progress
-- Nothing mid-edit. Friend-chat change committed (25affa1), pushed, hosted migrations 0008/0009 applied, deployed.
+- Nothing mid-edit. Fourth-review fixes committed (f900e5c), pushed, hosted migration 0010 applied, deployed.
 
 ## Next steps
 - User to test the friend chat on two real devices (offline delivery, unread badge, friend-message push after opting in under Profile).
