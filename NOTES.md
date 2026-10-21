@@ -1,7 +1,7 @@
 # NOTES.md — running notes (updated after every change)
 
 ## Current goal
-Combined-audit fixes (migration 0012) built, tested (125) and browser-checked locally; committing, applying 0012 to the hosted project and deploying. Then waiting on the user's real-device tests (push, friend chat on two devices).
+Combined-audit fixes are live: commits 0ac76f5 + b88645b pushed, migration 0012 applied to the hosted project, Vercel production deployment Ready (https://common-ground-dusky-nine.vercel.app) with CSP/security headers verified on the live site; a production tick ran clean after the deploy. Waiting on the user's real-device tests (push, friend chat on two devices).
 
 ## Decisions (with reasoning)
 - **Supabase + Next.js, local-first:** RLS gives per-row access checks; everything mutating goes through RPCs so race safety lives in SQL.
@@ -29,7 +29,7 @@ Combined-audit fixes (migration 0012) built, tested (125) and browser-checked lo
 - 69 automated tests; live two-user run on the deployed app (before v2).
 
 ## In progress
-- Audit fixes: code complete; commit/push, `db push` (0012) and deploy in progress.
+- Nothing mid-edit. Audit fixes committed (0ac76f5, b88645b), pushed, hosted migration 0012 applied, deployed and verified.
 
 ## Next steps
 - User to test the friend chat on two real devices (offline delivery, unread badge, friend-message push after opting in under Profile).
@@ -45,6 +45,7 @@ Combined-audit fixes (migration 0012) built, tested (125) and browser-checked lo
 - Reviewer coverage: held messages wait for the single admin.
 
 ## Gotchas
+- Next segment config exports (`maxDuration`, `dynamic`) must be literals; an imported constant builds locally but fails Vercel's build with "Invalid segment configuration export".
 - `create or replace function` with added default parameters leaves the old overload behind and makes RPC calls ambiguous: always `drop function if exists` the old signature (0010 `mark_thread_read`, 0012 `claim_pending`, `defer_pending`, `apply_moderation_decision`).
 - PostgREST bulk inserts send the union of keys: a row that omits a column another row sets gets an explicit null (not the default). Give every row the same keys in test fixtures.
 - Local QA account `qa-alice@test.local` has `onboarding_complete = false` since the questionnaire-v2 reset; the lobby sends it to onboarding until the questionnaire is redone.
