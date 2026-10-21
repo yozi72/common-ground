@@ -27,7 +27,7 @@ Short status for anyone reviewing this codebase (including an AI reviewer). Upda
 - Leave / block / report; partner-away notice (≤2 min); abandonment; reflection; mutual-consent "Friends" with one persistent chat per friendship under the same aliases (see "Friend chats" below); account + data deletion; retention purge.
 - Profile stats (people talked with, conversations, mutual friends) and 13 participation badges; the other participant sees only coarse tiers (`peer_badges`), never exact counts.
 - Admin review console at `/admin` for the `ADMIN_EMAIL` account (held messages, reports, appeals, policy knobs).
-- 90 tests across 9 files (integration against a local Supabase + unit) (`npm test`), lint, typecheck, production build.
+- 102 tests across 10 files (integration against a local Supabase + unit) (`npm test`), lint, typecheck, production build.
 
 ## Unfinished, mocked, or known issues
 
@@ -113,6 +113,20 @@ All nine findings were confirmed and fixed in `2c165c7` (migration `0004_review_
 | 7 | Success metric counted one participant | `conversation_opened` logged for both participants | pilot “metric is recorded for both participants” |
 | — | Sign-in page wording | mentions optional session reminders | — |
 
+## Fifth review (f900e5c / 06d422f) — status
+
+| # | Finding | Fix | Test |
+|---|---|---|---|
+| 1 | "Give us a question" accepted live conversations; a 'mid' question at seq 10 left the opening round stuck | `can_request_question` is friend-only (active, unblocked friendship); `insert_question` enforces phases server-side (opening questions only during a live opening round, mid questions only in open chat); the opening round completes on the number of revealed questions. Migration 0011 closes stray open mid questions in opening rounds and moves rounds with enough revealed questions to chat. Hosted check before deploy: no live conversation was stuck in 'opening'. | pilot "'Give us a question' is refused in a live session…", "a friend thread accepts the question action and only mid questions" |
+| 2 | Message 201 vanished when message 401 arrived (newest page replaced the loaded set) | The client keeps everything it loaded and merges each newest page by id (`src/lib/chat-history.ts`); ordering and paging use (created_at, id), so identical timestamps are stable; "Show earlier messages" pages strictly before the oldest loaded message. | `tests/chat-history.test.ts` (401st message, overlapping pages, identical timestamps, start of history); pilot "…history pages by (created_at, id)" (450 rows with repeated timestamps) |
+| 3 | A new "revise" was hidden behind 1,000 older send records | The chat loads only actionable send records (pending, review, revise, blocked; newest 50) — `actionablePending()` in `src/lib/chat-queries.ts`; completed ones are history in `approved_messages`. | pilot "a fresh 'revise' stays reachable behind more than 1,000 completed send records" |
+| 4 | A claimed alert could be sent after mute/block/removal/read and overwrite 'cancelled' with 'sent'; a stale failure report could resurrect a cancelled alert | `recheck_push_queue(id, claimed_at)` right before every device send; `finish_push_queue(id, claimed_at, …)` and `fail_push_queue` only act while the row is still that worker's claim. Boundary documented in the worker: a notification already handed to the push provider cannot be recalled. | pilot "push: a mute … after the claim stops the remaining devices and is never overwritten by 'sent'", "push: an obsolete alert … is skipped at send time" |
+| 5 | One device succeeding marked the whole alert sent; the failed device never retried | Per-device state in `push_queue.deliveries` (sent / failed / gone, attempts); transient failures requeue with backoff (1, 2, 4 min; 3 attempts) and skip devices already delivered; 404/410 disables the subscription; devices, consent, mute, friendship, blocks and unread are re-read on every attempt. | pilot "push: one device succeeds, one fails transiently → only the failed one is retried; expired ones are disabled" |
+| 6 | Read-mark HTTP 500 treated as success; ended friendships counted unread forever; Friends list stale | The client keeps the bound only on a 2xx and retries on the next load (`readMarkFor` / `readMarkAfter`); ended histories mark read when viewed; the Friends list re-fetches on realtime notifications, the chat's read event, focus/visibility and every 30 s, with the Refresh button kept. | `tests/chat-history.test.ts` (read-mark decision), pilot "viewing an ended friendship's history marks it read" |
+| 7 | Removal said "can't be undone" | Confirmation now says messaging stops, history stays until expiry, reconnecting needs both to agree again (Friends list and chat menu). Block wording unchanged. | — (manual) |
+| 8 | Homepage copy | Exact hero copy applied; four sections kept; "Different, on purpose" text replaced. | — (manual) |
+| 9 | Session schedule before signup | `SessionStatus` on the homepage reads the shared schedule (`getScheduleConfig` → `src/lib/schedule.ts`), shows the next session in the device timezone (Pacific-time fallback with a label), the daily window, "Once you become friends, you can message each other anytime", and labels the button "Find someone to talk to" during the window / "Get ready for the next session" outside it. Routes to sign-in (or the lobby when signed in). Recomputed every second from the server-synced clock and on focus. | `tests/schedule.test.ts` (existing schedule logic); manual: label and next-session text checked locally inside and outside the window |
+
 ## Fourth review (25affa1 / 0687936) — status
 
 | # | Finding | Fix | Test |
@@ -125,7 +139,7 @@ All nine findings were confirmed and fixed in `2c165c7` (migration `0004_review_
 | 6 | Friend-push failures had no retry path | `fail_push_queue`: back to the queue with backoff (1, 2, 4 min), `failed` after three attempts; claims older than 10 minutes are reclaimed. | same pilot test as 4 |
 | 7 | Privacy page said all delivered messages are deleted 30 days after a conversation ends | Distinguishes session messages (30 days after the conversation ends) from friend messages (30 days after sending). | — |
 
-**Limitation kept on purpose:** the read marker is a single timestamp per person and thread. Seeing the newest page marks everything older as read, including older unread messages the reader has not paged back to. Per-message read receipts would be needed to do better; not planned for the pilot.
+**Limitations kept on purpose:** a push already handed to the provider cannot be recalled if the recipient mutes/reads in that same instant. The read marker is a single timestamp per person and thread. Seeing the newest page marks everything older as read, including older unread messages the reader has not paged back to. Per-message read receipts would be needed to do better; not planned for the pilot.
 
 ## Friend chats, queue repair, reminder edge cases (2026-10-20)
 
@@ -160,6 +174,8 @@ All nine findings were confirmed and fixed in `2c165c7` (migration `0004_review_
 - Scheduler: `worker_config` rows `tick_url` and `cron_secret` on the hosted database (set via service role); the cron job `common-ground-tick` is created by migration 0005.
 
 ## Change log
+
+- 2026-10-21 — Fifth review fixes: friend-only question action with server-side phase rules and round completion by revealed count, chat history merged by id with (created_at, id) paging, actionable-only send records, push re-check before each device send with claim-conditional updates and per-device retry, read-mark retry and ended-history reads, live Friends list, removal wording, homepage copy and session-schedule panel. Migration 0011. 102 tests.
 
 - 2026-10-20 — Fourth review fixes: questions close with the conversation (block/leave can no longer reveal a hidden answer), revocable friendship consent, read marks only for loaded + visible messages with live badges, push-queue re-check/cancel/retry, chat pagination, privacy wording. Migration 0010. 90 tests.
 

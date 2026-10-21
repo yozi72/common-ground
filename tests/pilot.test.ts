@@ -5,6 +5,9 @@ import { sendDueReminders } from "@/lib/workers/reminders";
 import { sessionDueForReminder, DEFAULT_SCHEDULE } from "@/lib/schedule";
 import { getScheduleConfig } from "@/lib/schedule-config";
 import { processPendingBatch } from "@/lib/workers/moderation";
+import { sendFriendMessagePushes } from "@/lib/workers/friend-push";
+import { actionablePending, latestMessages, olderMessages } from "@/lib/chat-queries";
+import { mergeMessages, olderCursor } from "@/lib/chat-history";
 import { generateNextQuestion } from "@/lib/workers/questions";
 
 const users: TestUser[] = [];
@@ -1199,6 +1202,11 @@ describe("fourth review regressions (2026-10-20)", () => {
     ({ data: claimed } = await admin().rpc("claim_push_queue", { p_limit: 10 }));
     expect(claimed!.map((r: { id: string }) => r.id)).toEqual([id]);
     await admin().rpc("fail_push_queue", { p_id: id, p_error: "push 502" });
+    // a failure report for a row that is no longer claimed changes nothing (fifth review)
+    ({ data: st } = await admin().rpc("fail_push_queue", { p_id: id, p_error: "stale report" }));
+    expect(st).toBe("queued");
+    await admin().from("push_queue").update({ next_attempt_at: new Date().toISOString() }).eq("id", id);
+    await admin().rpc("claim_push_queue", { p_limit: 10 });
     ({ data: st } = await admin().rpc("fail_push_queue", { p_id: id, p_error: "push 502" }));
     expect(st).toBe("failed");
     // a stale claim (worker died) is reclaimed after 10 minutes
@@ -1237,5 +1245,176 @@ describe("fourth review regressions (2026-10-20)", () => {
     await a.client.rpc("submit_message", { p_conversation: tid, p_client_send_id: "rm-3", p_body: "third" });
     await processPendingBatch();
     expect(await unread()).toBe(1);
+  });
+});
+
+describe("fifth review regressions (2026-10-21)", () => {
+  async function befriend(tagA: string, tagB: string) {
+    const a = await user(tagA, LEFT);
+    const b = await user(tagB, RIGHT);
+    const conv = await openConversation(a, b);
+    await a.client.rpc("leave_conversation", { p_conversation: conv });
+    await a.client.rpc("set_connection_decision", { p_conversation: conv, p_decision: true });
+    await b.client.rpc("set_connection_decision", { p_conversation: conv, p_decision: true });
+    const { data: conns } = await a.client.rpc("friend_threads_overview");
+    const { data: tid } = await a.client.rpc("open_friend_thread", { p_connection: conns![0].connection_id });
+    return { a, b, conv, connectionId: conns![0].connection_id as string, tid: tid as string };
+  }
+  const sendAndQueue = async (a: TestUser, tid: string, bId: string, id: string) => {
+    await admin().from("thread_reads").update({ last_push_at: null }).eq("conversation_id", tid).eq("account_id", bId);
+    await a.client.rpc("submit_message", { p_conversation: tid, p_client_send_id: id, p_body: "hello " + id });
+    await processPendingBatch();
+    const { data } = await admin().from("push_queue").select("id, status, deliveries, attempts, next_attempt_at").eq("account_id", bId).order("created_at", { ascending: false }).limit(1).single();
+    return data!;
+  };
+
+  it("'Give us a question' is refused in a live session, and a mid question cannot derail the opening round", async () => {
+    const a = await user("gq-a", LEFT);
+    const b = await user("gq-b", RIGHT);
+    const conv = await openConversation(a, b);
+    // nine opening questions answered by both
+    for (let i = 0; i < 9; i++) {
+      const qid = await generateNextQuestion(conv, "opening");
+      await a.client.rpc("answer_with_choice", { p_question: qid, p_choice: 0 });
+      await b.client.rpc("answer_with_choice", { p_question: qid, p_choice: 1 });
+    }
+    const r = await a.client.rpc("can_request_question", { p_conversation: conv });
+    expect(r.error?.code).toBe("P0001");                                   // friend threads only
+    await expect(generateNextQuestion(conv, "mid")).rejects.toThrow(/opening/); // server refuses the phase
+    const { data: qs } = await admin().from("conversation_questions").select("phase, status").eq("conversation_id", conv).order("seq");
+    expect(qs!.length).toBe(9);
+    expect(qs!.every((q) => q.phase === "opening" && q.status === "revealed")).toBe(true);
+    const qid = await generateNextQuestion(conv, "opening");
+    await a.client.rpc("answer_with_choice", { p_question: qid, p_choice: 0 });
+    await b.client.rpc("answer_with_choice", { p_question: qid, p_choice: 1 });
+    const { data: c } = await admin().from("conversations").select("status").eq("id", conv).single();
+    expect(c!.status).toBe("chatting");
+    await expect(generateNextQuestion(conv, "opening")).rejects.toThrow(/mid/); // and no opening questions once chatting
+  });
+
+  it("a friend thread accepts the question action and only mid questions", async () => {
+    const { a, tid } = await befriend("gf-a", "gf-b");
+    const { data: ok } = await a.client.rpc("can_request_question", { p_conversation: tid });
+    expect(ok).toBe(true);
+    await expect(generateNextQuestion(tid, "opening")).rejects.toThrow(/mid/);
+    const qid = await generateNextQuestion(tid, "mid");
+    expect(qid).toBeTruthy();
+    const { data: again } = await a.client.rpc("can_request_question", { p_conversation: tid });
+    expect(again).toBe(false); // one open at a time
+  });
+
+  it("push: one device succeeds, one fails transiently → only the failed one is retried; expired ones are disabled", async () => {
+    const { a, b, tid } = await befriend("pd-a", "pd-b");
+    await b.client.from("reminder_prefs").upsert({ account_id: b.id, friend_push_enabled: true });
+    const epA = `https://fcm.googleapis.com/fcm/send/dev-a-${b.id}`, epB = `https://fcm.googleapis.com/fcm/send/dev-b-${b.id}`;
+    for (const ep of [epA, epB]) await b.client.rpc("upsert_push_subscription", { p_endpoint: ep, p_p256dh: "kkkkkkkkkkkk", p_auth: "aaaaaa", p_user_agent: "t" });
+    const row = await sendAndQueue(a, tid, b.id, "pd-1");
+    expect(row.status).toBe("queued");
+    const calls: string[] = [];
+    let failA = true;
+    const send = async (sub: { endpoint: string }) => { calls.push(sub.endpoint); if (sub.endpoint === epA && failA) throw Object.assign(new Error("Service Unavailable"), { statusCode: 503 }); };
+    let out = await sendFriendMessagePushes(10, { configured: true, send });
+    expect(out).toMatchObject({ sent: 0, retried: 1, failed: 0 });
+    let { data: q } = await admin().from("push_queue").select("status, attempts, deliveries, next_attempt_at").eq("id", row.id).single();
+    expect(q!.status).toBe("queued");
+    expect(q!.attempts).toBe(1);
+    const { data: subs } = await admin().from("push_subscriptions").select("id, endpoint").in("endpoint", [epA, epB]);
+    const idOf = (ep: string) => subs!.find((s) => s.endpoint === ep)!.id;
+    expect(q!.deliveries[idOf(epB)].status).toBe("sent");
+    expect(q!.deliveries[idOf(epA)]).toMatchObject({ status: "failed", attempts: 1 });
+    expect(calls.sort()).toEqual([epA, epB].sort());
+    // retry: due now, device A recovers, device B is not sent again
+    await admin().from("push_queue").update({ next_attempt_at: new Date().toISOString() }).eq("id", row.id);
+    failA = false; calls.length = 0;
+    out = await sendFriendMessagePushes(10, { configured: true, send });
+    expect(out).toMatchObject({ sent: 1, retried: 0 });
+    expect(calls).toEqual([epA]);
+    ({ data: q } = await admin().from("push_queue").select("status, deliveries").eq("id", row.id).single());
+    expect(q!.status).toBe("sent");
+    expect(q!.deliveries[idOf(epA)].status).toBe("sent");
+    // an expired subscription (410) is disabled; the other device still counts as delivered
+    const row2 = await sendAndQueue(a, tid, b.id, "pd-2");
+    out = await sendFriendMessagePushes(10, { configured: true, send: async (sub) => { if (sub.endpoint === epA) throw Object.assign(new Error("Gone"), { statusCode: 410 }); } });
+    expect(out).toMatchObject({ sent: 1 });
+    const { data: gone } = await admin().from("push_subscriptions").select("disabled_at").eq("endpoint", epA).single();
+    expect(gone!.disabled_at).not.toBeNull();
+    ({ data: q } = await admin().from("push_queue").select("status, deliveries").eq("id", row2.id).single());
+    expect(q!.status).toBe("sent");
+    expect(q!.deliveries[idOf(epA)].status).toBe("gone");
+  });
+
+  it("push: a mute (or read/removal/block) after the claim stops the remaining devices and is never overwritten by 'sent'", async () => {
+    const { a, b, tid } = await befriend("pc-a", "pc-b");
+    await b.client.from("reminder_prefs").upsert({ account_id: b.id, friend_push_enabled: true });
+    const eps = [1, 2].map((n) => `https://fcm.googleapis.com/fcm/send/dev-${n}-${b.id}`);
+    for (const ep of eps) await b.client.rpc("upsert_push_subscription", { p_endpoint: ep, p_p256dh: "kkkkkkkkkkkk", p_auth: "aaaaaa", p_user_agent: "t" });
+    const row = await sendAndQueue(a, tid, b.id, "pc-1");
+    let calls = 0;
+    // the first device send succeeds, but while it is in flight the recipient mutes the thread
+    const out = await sendFriendMessagePushes(10, { configured: true, send: async () => { calls++; await b.client.rpc("set_thread_muted", { p_conversation: tid, p_muted: true }); } });
+    expect(calls).toBe(1);
+    expect(out).toMatchObject({ sent: 0, cancelled: 1 });
+    const { data: q } = await admin().from("push_queue").select("status, last_error").eq("id", row.id).single();
+    expect(q).toEqual({ status: "cancelled", last_error: "muted" });
+    // a stale failure report for a row that is no longer claimed changes nothing either
+    const { data: st } = await admin().rpc("fail_push_queue", { p_id: row.id, p_error: "late" });
+    expect(st).toBe("cancelled");
+    const { data: q2 } = await admin().from("push_queue").select("status, attempts").eq("id", row.id).single();
+    expect(q2).toEqual({ status: "cancelled", attempts: 0 });
+  });
+
+  it("push: an obsolete alert (read before the worker got to it) is skipped at send time", async () => {
+    const { a, b, tid } = await befriend("po-a", "po-b");
+    await b.client.from("reminder_prefs").upsert({ account_id: b.id, friend_push_enabled: true });
+    await b.client.rpc("upsert_push_subscription", { p_endpoint: `https://fcm.googleapis.com/fcm/send/dev-${b.id}`, p_p256dh: "kkkkkkkkkkkk", p_auth: "aaaaaa", p_user_agent: "t" });
+    const row = await sendAndQueue(a, tid, b.id, "po-1");
+    // claimed by a worker that then stalls; meanwhile the recipient reads the thread
+    const { data: claimed } = await admin().rpc("claim_push_queue", { p_limit: 10 });
+    expect(claimed!.map((r: { id: string }) => r.id)).toEqual([row.id]);
+    await b.client.rpc("mark_thread_read", { p_conversation: tid });
+    const { data: q } = await admin().from("push_queue").select("status").eq("id", row.id).single();
+    expect(q!.status).toBe("cancelled");
+    const { data: state } = await admin().rpc("recheck_push_queue", { p_id: row.id, p_claimed_at: claimed![0].claimed_at });
+    expect(state).toBe("cancelled");
+  });
+
+  it("a fresh 'revise' stays reachable behind more than 1,000 completed send records; history pages by (created_at, id)", async () => {
+    const { a, b, tid } = await befriend("lp-a", "lp-b");
+    const { data: pid } = await a.client.rpc("my_participant_id", { p_conversation: tid });
+    const rows = Array.from({ length: 1001 }, (_, i) => ({ conversation_id: tid, sender_participant_id: pid, client_send_id: `old-${i}`, kind: "chat", body: `old ${i}`, status: "approved", created_at: new Date(Date.now() - (2000 - i) * 1000).toISOString() }));
+    for (let i = 0; i < rows.length; i += 500) { const { error } = await admin().from("pending_messages").insert(rows.slice(i, i + 500)); expect(error).toBeNull(); }
+    await a.client.rpc("submit_message", { p_conversation: tid, p_client_send_id: "lp-needs-action", p_body: "call me on 415-555-0199" });
+    await processPendingBatch();
+    const { data: act } = await actionablePending(a.client, tid);
+    expect(act!.map((p) => [p.client_send_id, p.status])).toEqual([["lp-needs-action", "revise"]]);
+    // 450 delivered messages (some with identical timestamps): newest page, then older pages, nothing lost
+    const t0 = Date.now() - 100_000;
+    const msgs = Array.from({ length: 450 }, (_, i) => ({ conversation_id: tid, sender_participant_id: pid, kind: "chat", body: `m${i}`, created_at: new Date(t0 + Math.floor(i / 3) * 1000).toISOString() }));
+    for (let i = 0; i < msgs.length; i += 150) { const { error } = await admin().from("approved_messages").insert(msgs.slice(i, i + 150)); expect(error).toBeNull(); }
+    let have = mergeMessages([], (await latestMessages(b.client, tid)).data!);
+    expect(have.length).toBe(200);
+    let pages = 0;
+    for (;;) {
+      const page = (await olderMessages(b.client, tid, olderCursor(have)!)).data!;
+      have = mergeMessages(have, page); pages++;
+      if (page.length < 200) break;
+    }
+    expect(pages).toBe(2);
+    expect(have.length).toBe(450);
+    expect(new Set(have.map((m) => m.id)).size).toBe(450);
+    for (let i = 1; i < have.length; i++) expect(have[i - 1].created_at <= have[i].created_at).toBe(true);
+  });
+
+  it("viewing an ended friendship's history marks it read", async () => {
+    const { a, b, connectionId, tid } = await befriend("eh-a", "eh-b");
+    await a.client.rpc("submit_message", { p_conversation: tid, p_client_send_id: "eh-1", p_body: "before the end" });
+    await processPendingBatch();
+    await a.client.rpc("remove_friend", { p_connection: connectionId });
+    expect((await b.client.rpc("friend_unread_total")).data).toBe(1);
+    // the client bounds the mark to the newest message it displayed (a server timestamp, never the device clock)
+    const { data: newest } = await b.client.from("approved_messages").select("created_at").eq("conversation_id", tid).order("created_at", { ascending: false }).limit(1).single();
+    const { error } = await b.client.rpc("mark_thread_read", { p_conversation: tid, p_up_to: newest!.created_at });
+    expect(error).toBeNull();
+    expect((await b.client.rpc("friend_unread_total")).data).toBe(0);
   });
 });
