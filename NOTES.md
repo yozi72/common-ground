@@ -1,7 +1,7 @@
 # NOTES.md — running notes (updated after every change)
 
 ## Current goal
-Friends-as-persistent-chats change built and tested (84 tests); being committed, migrated (0008, 0009) and deployed. Then waiting on the user's real-device tests (push, friend chat on two devices).
+Friends-as-persistent-chats change is live: commit 25affa1 pushed, migrations 0008 + 0009 applied to the hosted project, Vercel production deployment Ready (https://common-ground-dusky-nine.vercel.app). Waiting on the user's real-device tests (push, friend chat on two devices).
 
 ## Decisions (with reasoning)
 - **Supabase + Next.js, local-first:** RLS gives per-row access checks; everything mutating goes through RPCs so race safety lives in SQL.
@@ -26,7 +26,7 @@ Friends-as-persistent-chats change built and tested (84 tests); being committed,
 - 69 automated tests; live two-user run on the deployed app (before v2).
 
 ## In progress
-- Friend-chat change: code complete, tests green, docs updated; commit/push, `supabase db push` (0008, 0009) and Vercel deploy in progress (see Current goal). Nothing else mid-edit.
+- Nothing mid-edit. Friend-chat change committed (25affa1), pushed, hosted migrations 0008/0009 applied, deployed.
 
 ## Next steps
 - User to test the friend chat on two real devices (offline delivery, unread badge, friend-message push after opting in under Profile).
