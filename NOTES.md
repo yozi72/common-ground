@@ -1,7 +1,7 @@
 # NOTES.md — running notes (updated after every change)
 
 ## Current goal
-Two-tier chats (migration 0013) built, tested (131) and browser-checked locally; committing, applying 0013 to the hosted project and deploying. Then waiting on the user's real-device tests (push, chats on two devices).
+Two-tier chats are live: commit 99c121a pushed, migration 0013 applied to the hosted project, Vercel production deployment Ready (https://common-ground-dusky-nine.vercel.app). Waiting on the user's real-device tests (push, a two-device chat including Become friends from both sides).
 
 ## Decisions (with reasoning)
 - **Supabase + Next.js, local-first:** RLS gives per-row access checks; everything mutating goes through RPCs so race safety lives in SQL.
@@ -31,7 +31,7 @@ Two-tier chats (migration 0013) built, tested (131) and browser-checked locally;
 - 69 automated tests; live two-user run on the deployed app (before v2).
 
 ## In progress
-- Two-tier chats: code complete; commit/push, `db push` (0013) and deploy in progress.
+- Nothing mid-edit. Two-tier chats committed (99c121a), pushed, hosted migration 0013 applied, deployed.
 
 ## Next steps
 - User to test the friend chat on two real devices (offline delivery, unread badge, friend-message push after opting in under Profile).
