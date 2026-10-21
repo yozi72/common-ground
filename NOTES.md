@@ -1,7 +1,7 @@
 # NOTES.md — running notes (updated after every change)
 
 ## Current goal
-Fifth-review fixes (migration 0011) built, tested (102) and browser-checked locally; committing, applying 0011 to the hosted project and deploying. Then waiting on the user's real-device tests (push, friend chat on two devices).
+Fifth-review fixes are live: commit 6e437b0 pushed, migration 0011 applied to the hosted project, Vercel production deployment Ready (https://common-ground-dusky-nine.vercel.app). Waiting on the user's real-device tests (push, friend chat on two devices).
 
 ## Decisions (with reasoning)
 - **Supabase + Next.js, local-first:** RLS gives per-row access checks; everything mutating goes through RPCs so race safety lives in SQL.
@@ -28,7 +28,7 @@ Fifth-review fixes (migration 0011) built, tested (102) and browser-checked loca
 - 69 automated tests; live two-user run on the deployed app (before v2).
 
 ## In progress
-- Fifth-review fixes: code complete; commit/push, `db push` (0011) and deploy in progress.
+- Nothing mid-edit. Fifth-review fixes committed (6e437b0), pushed, hosted migration 0011 applied, deployed.
 
 ## Next steps
 - User to test the friend chat on two real devices (offline delivery, unread badge, friend-message push after opting in under Profile).
