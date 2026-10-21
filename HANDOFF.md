@@ -27,7 +27,7 @@ Short status for anyone reviewing this codebase (including an AI reviewer). Upda
 - Leave / block / report; partner-away notice (≤2 min); abandonment; reflection; mutual-consent "Friends" with one persistent chat per friendship under the same aliases (see "Friend chats" below); account + data deletion; retention purge.
 - Profile stats (people talked with, conversations, mutual friends) and 13 participation badges; the other participant sees only coarse tiers (`peer_badges`), never exact counts.
 - Admin review console at `/admin` for the `ADMIN_EMAIL` account (held messages, reports, appeals, policy knobs).
-- 102 tests across 10 files (integration against a local Supabase + unit) (`npm test`), lint, typecheck, production build.
+- 125 tests across 11 files (integration against a local Supabase + unit) (`npm test`), lint, typecheck, production build.
 
 ## Unfinished, mocked, or known issues
 
@@ -113,6 +113,28 @@ All nine findings were confirmed and fixed in `2c165c7` (migration `0004_review_
 | 7 | Success metric counted one participant | `conversation_opened` logged for both participants | pilot “metric is recorded for both participants” |
 | — | Sign-in page wording | mentions optional session reminders | — |
 
+## Combined audit (e1e4b49) — status
+
+| # | Finding | Status | Fix / evidence |
+|---|---|---|---|
+| 1 | `availability_requests.avoid_account_ids` exposed peer account ids to the row's owner | Confirmed, fixed | Column-level grant (migration 0012): clients can read only the safe columns; `select *` or the column itself is refused (42501). Lobby queries already name their columns; the table is not in the realtime publication. Test "1. queue rows never expose…" |
+| 2 | Direct writes could mark onboarding complete, store unvalidated answers, insert consent rows | Confirmed, fixed | `accounts` read-only for clients (update policy dropped, privilege revoked); `profiles` select + update policies with a column grant for `timezone_override` only (everything else via `complete_onboarding`, which validates); consent inserts revoked, `record_consent(kind, version, granted)` validates kinds. Test "2. onboarding, political answers and consent…" (bypass attempts with the authenticated role, plus the intended paths) |
+| 3 | `leave_conversation` accepted friend threads | Confirmed, fixed | Live conversations only (P0001 otherwise); migration repairs friend threads ended with reason `left` whose friendship is still active and unblocked. Hosted check before deploy: none existed. Test "3." |
+| 4 | Simultaneous "yes" decisions could both miss each other | Confirmed, fixed | `set_connection_decision`, `remove_friend` and `block_peer` take sorted per-account advisory locks (same order as acceptance). Test "4." runs the two decisions concurrently, repeats them, races a removal and a block |
+| 5 | 20 s moderation lease shorter than a model call; stale results could overwrite newer outcomes | Confirmed, fixed | Claims carry `claim_token`; `apply_moderation_decision` / `defer_pending` act only with the live token (automated) or as an explicit human decision (`provider = 'human'`, pending/review rows). Lease 75 s = gateway timeout 25 s × 2 tries + margin; `claim_pending_by_id` for immediate processing; `release_pending_claim` for unfinished work. `approved_messages.pending_message_id` is unique, so delivery can't repeat. Test "5." (expired lease + overlapping worker, stale allow after a human block, cancellation, exhausted retries → human allow, immediate-vs-batch race) |
+| 6 | Worker could exceed the hosting limit; rows consumed attempts while waiting | Confirmed, fixed | `Deadline` budget (maxDuration 60 s − 12 s margin); reminders/emails/pushes run before moderation and question generation; moderation claims at most what can start before the deadline, in batches of 5, and releases the rest without consuming the attempt; email sends check the budget per row. Test "6." |
+| 7 | `run_matching` could invite a concurrently cancelled entry | Confirmed, fixed | Both rows are locked (ordered) and status, pause, expiry, session, presence, avoid lists, blocks, active conversation and threshold are re-checked before the invitation; the invitation email insert (lost in 0006) is restored. Test "7." races matching against `leave_queue` |
+| 8 | Real-name / employer lead-ins were case-sensitive | Confirmed, fixed | Case-insensitive lead-ins; the name/employer must still be capitalized; a stoplist keeps "I'm Sorry" / "This is Really" from matching. `tests/detectors.test.ts` |
+| 9 | Email outbox had no exclusive claims or retries | Confirmed, fixed | `claim_email_outbox` (skip-locked, 2-minute lease, reclaim on expiry), relevance check at claim and again right before sending (invitation still pending, notice still requested), `finish_email_outbox` conditional on the claim with backoff (1, 2, 4, 8 min; failed after 5), permanent failures fail at once, declined/expired invitations cancel their notices (trigger). Resend sends carry `Idempotency-Key`; SMTP has none, so a crash between a successful SMTP send and the finish can repeat one notice within the 2-minute lease (documented in the worker). Test "9." (concurrent claims, transient vs permanent failure, expired lease, cancellation, no re-send) |
+| 10 | `metrics_summary` exposure | Confirmed (authenticated had EXECUTE; anon did not), fixed | Revoked from authenticated along with `is_blocked_either_way`, `difference_score`, `shared_answers`, `pair_threshold`, `answered_dimensions`, `tier_of`, `random_alias`, `take_rate_limit`, `cfg`, `session_open_now`; the admin page uses `admin_metrics` (admin check). Test "10." checks actual role permissions |
+| 11 | GET unsubscribe changed state | Confirmed, fixed | GET shows a confirmation page; POST (form, or RFC 8058 one-click with `List-Unsubscribe-Post`) performs it; reminder emails carry `List-Unsubscribe` headers. Test "11." (prefetch changes nothing; confirm and one-click do) |
+| 12 | No CSP / frame / sniffing headers | Confirmed, fixed | `next.config.ts` headers: CSP tailored to the app (self + Supabase REST/websocket, inline Next bootstrap, self-hosted fonts, service worker), `frame-ancestors 'none'`, `X-Frame-Options`, `nosniff`, Referrer-Policy, Permissions-Policy, COOP, HSTS. Verified locally (sign-in, lobby, chat, realtime, calendar download, service worker; no CSP reports) and on the deployed site |
+| 13 | Config and retention cleanup | Fixed | `.env.example` tracked (placeholders only); constant-time cron secret check; dedicated `REMINDER_UNSUB_SECRET` (no fallbacks; `_PREVIOUS` accepted during rotation — set on Vercel to the old fallback so existing links keep working); indexes on `question_answers(conversation_id)`, `pending_messages(conversation_id, created_at)`, push queue (thread, due), outbox due, metrics/queue/reminder-send timestamps; retention: finished queue entries 90 days, metric events 365 days (worker heartbeats 7), finished outbox rows 30 days, reminder sends 30 days; live/friend message rules unchanged. Test "13." |
+| 14 | Messages 201–300 lost after a disconnect gap | Confirmed, fixed | `gapCursor` detects a newest page that does not overlap the cache and the client catches up forward page by page (`newerMessages`) until the ranges meet. `tests/chat-history.test.ts` (gap larger than one page, arrivals during pagination) |
+| 15 | Deleted / expired messages stayed in the cache | Confirmed, fixed | Every fetched page is authoritative for its own range (`reconcile`): cached messages inside the range but missing from the page are dropped, others kept; realtime DELETE events remove by id; history outside the newest page is re-verified by id on reconnect and every minute. `tests/chat-history.test.ts` |
+
+Dependency audit: `npm audit --omit=dev` reports 0 vulnerabilities; `npm audit` reports 5 high in dev-only tooling (`braces` via `eslint-config-next`), not shipped, fix would require a forced major change of the lint preset.
+
 ## Fifth review (f900e5c / 06d422f) — status
 
 | # | Finding | Fix | Test |
@@ -174,6 +196,8 @@ All nine findings were confirmed and fixed in `2c165c7` (migration `0004_review_
 - Scheduler: `worker_config` rows `tick_url` and `cron_secret` on the hosted database (set via service role); the cron job `common-ground-tick` is created by migration 0005.
 
 ## Change log
+
+- 2026-10-21 — Combined audit fixes (15 findings: peer-id exposure, validated writes, friend-thread leave guard, decision locking, moderation claim tokens, worker deadline, matching revalidation, detector casing, email outbox claims/retries, internal RPC grants, unsubscribe POST flow, security headers, config/retention cleanup, chat gap catch-up and deletion reconciliation). Migration 0012. 125 tests.
 
 - 2026-10-21 — Fifth review fixes: friend-only question action with server-side phase rules and round completion by revealed count, chat history merged by id with (created_at, id) paging, actionable-only send records, push re-check before each device send with claim-conditional updates and per-device retry, read-mark retry and ended-history reads, live Friends list, removal wording, homepage copy and session-schedule panel. Migration 0011. 102 tests.
 

@@ -84,7 +84,7 @@ export async function sendDueReminders(nowMs = Date.now()) {
           if (!to) throw new Error("no email");
           const t = formatSessionTime(session, cfg.timezone, cfg.timezone);
           const unsub = `${env.siteUrl()}/api/reminders/unsubscribe?t=${unsubscribeToken(p.account_id)}`;
-          await sendEmail(to, "Common Ground: the conversation hour starts soon", `Today's session starts in ${lead} minutes (${t.range} ${t.tzName}).\n\nJoin at the start for the best chance of a match: ${env.siteUrl()}/lobby\n\nStop these emails (one click): ${unsub}\nOr manage reminders under Profile → Reminders.`);
+          await sendEmail(to, "Common Ground: the conversation hour starts soon", `Today's session starts in ${lead} minutes (${t.range} ${t.tzName}).\n\nJoin at the start for the best chance of a match: ${env.siteUrl()}/lobby\n\nStop these emails: ${unsub}\nOr manage reminders under Profile → Reminders.`, { unsubscribeUrl: unsub, idempotencyKey: `reminder/${claim.id}` });
           await finish(admin, claim.id, "sent", null);
           out.email.sent++;
         } catch (e) {
@@ -124,15 +124,19 @@ async function retryOrFail(admin: ReturnType<typeof supabaseAdmin>, claim: Claim
   await finish(admin, claim.id, "failed", error.slice(0, 300));
 }
 
-async function sendEmail(to: string, subject: string, text: string) {
+// RFC 8058 one-click unsubscribe headers (mail providers POST "List-Unsubscribe=One-Click"
+// to the URL; a plain GET of the same URL only shows a confirmation page). Resend sends
+// carry an Idempotency-Key so a retried call can't double-deliver.
+async function sendEmail(to: string, subject: string, text: string, opts: { unsubscribeUrl: string; idempotencyKey: string }) {
+  const headers = { "List-Unsubscribe": `<${opts.unsubscribeUrl}>`, "List-Unsubscribe-Post": "List-Unsubscribe=One-Click" };
   const key = env.resendApiKey();
   if (key) {
-    const res = await fetch("https://api.resend.com/emails", { method: "POST", headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" }, body: JSON.stringify({ from: env.emailFrom(), to, subject, text }) });
+    const res = await fetch("https://api.resend.com/emails", { method: "POST", headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json", "Idempotency-Key": opts.idempotencyKey }, body: JSON.stringify({ from: env.emailFrom(), to, subject, text, headers }), signal: AbortSignal.timeout(15_000) });
     if (!res.ok) throw new Error(`resend ${res.status}`);
     return;
   }
   const smtp = env.smtp();
   if (!smtp) throw new Error("no sender");
-  const transport = nodemailer.createTransport({ host: smtp.host, port: smtp.port, secure: smtp.port === 465, auth: { user: smtp.user, pass: smtp.pass } });
-  await transport.sendMail({ from: `"${smtp.senderName}" <${smtp.user}>`, to, subject, text });
+  const transport = nodemailer.createTransport({ host: smtp.host, port: smtp.port, secure: smtp.port === 465, auth: { user: smtp.user, pass: smtp.pass }, connectionTimeout: 10_000, socketTimeout: 15_000 });
+  await transport.sendMail({ from: `"${smtp.senderName}" <${smtp.user}>`, to, subject, text, headers });
 }

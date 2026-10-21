@@ -47,10 +47,10 @@ export async function POST(req: Request) {
         const { error } = await supabase.from("reminder_prefs").upsert({ account_id: user.id, ...patch, updated_at: new Date().toISOString() }, { onConflict: "account_id" });
         if (error) throw fromRpcError(error);
         if (b.email_enabled !== undefined || b.push_enabled !== undefined) {
-          await supabase.from("consent_events").insert({ account_id: user.id, kind: "reminders", version: "v1", granted: !!(b.email_enabled || b.push_enabled) });
+          await supabase.rpc("record_consent", { p_kind: "reminders", p_version: "v1", p_granted: !!(b.email_enabled || b.push_enabled) });
         }
         if (b.friend_push_enabled !== undefined) {
-          await supabase.from("consent_events").insert({ account_id: user.id, kind: "friend_push", version: "v1", granted: b.friend_push_enabled });
+          await supabase.rpc("record_consent", { p_kind: "friend_push", p_version: "v1", p_granted: b.friend_push_enabled });
         }
         return ok({ next_session_start: (patch.next_session_start as string | undefined) ?? null });
       }

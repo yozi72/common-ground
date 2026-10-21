@@ -25,7 +25,7 @@ export default async function AdminPage() {
     admin.from("appeals").select("id, note, status, created_at, pending_messages(id, body, status, user_explanation)").eq("status", "open").order("created_at").limit(50),
     admin.from("policy_config").select("key, value").order("key"),
     admin.from("availability_requests").select("*", { count: "exact", head: true }).eq("status", "waiting"),
-    admin.rpc("metrics_summary", { p_since: since }),
+    admin.rpc("admin_metrics", { p_since: since }),
   ]);
 
   // Context for reports: the last 20 approved messages in each reported conversation.

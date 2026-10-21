@@ -6,6 +6,12 @@ import { sessionDueForReminder, DEFAULT_SCHEDULE } from "@/lib/schedule";
 import { getScheduleConfig } from "@/lib/schedule-config";
 import { processPendingBatch } from "@/lib/workers/moderation";
 import { sendFriendMessagePushes } from "@/lib/workers/friend-push";
+import { sendQueuedEmails, PermanentEmailError } from "@/lib/workers/email";
+import { processPendingById, processPendingBatch as processBatchWithDeadline } from "@/lib/workers/moderation";
+import { runTick } from "@/lib/workers/tick";
+import { Deadline } from "@/lib/workers/deadline";
+import { GET as unsubGet, POST as unsubPost } from "@/app/api/reminders/unsubscribe/route";
+import { unsubscribeToken } from "@/lib/unsubscribe";
 import { actionablePending, latestMessages, olderMessages } from "@/lib/chat-queries";
 import { mergeMessages, olderCursor } from "@/lib/chat-history";
 import { generateNextQuestion } from "@/lib/workers/questions";
@@ -1416,5 +1422,340 @@ describe("fifth review regressions (2026-10-21)", () => {
     const { error } = await b.client.rpc("mark_thread_read", { p_conversation: tid, p_up_to: newest!.created_at });
     expect(error).toBeNull();
     expect((await b.client.rpc("friend_unread_total")).data).toBe(0);
+  });
+});
+
+describe("audit regressions (2026-10-21)", () => {
+  const HUMAN = { p_categories: ["human_review"], p_user_explanation: null, p_suggested_revision: null, p_confidence: 1, p_detector_hits: [], p_provider: "human", p_model: null, p_raw_valid: true, p_latency_ms: null };
+  const AUTO = { p_categories: [], p_user_explanation: null, p_suggested_revision: null, p_confidence: 0.9, p_detector_hits: [], p_provider: "mock", p_model: "mock", p_raw_valid: true, p_latency_ms: 5 };
+  async function befriend(tagA: string, tagB: string) {
+    const a = await user(tagA, LEFT);
+    const b = await user(tagB, RIGHT);
+    const conv = await openConversation(a, b);
+    await a.client.rpc("leave_conversation", { p_conversation: conv });
+    await a.client.rpc("set_connection_decision", { p_conversation: conv, p_decision: true });
+    await b.client.rpc("set_connection_decision", { p_conversation: conv, p_decision: true });
+    const { data: conns } = await a.client.rpc("friend_threads_overview");
+    const { data: tid } = await a.client.rpc("open_friend_thread", { p_connection: conns![0].connection_id });
+    return { a, b, conv, connectionId: conns![0].connection_id as string, tid: tid as string };
+  }
+  async function chattingPair(tagA: string, tagB: string) {
+    const a = await user(tagA, LEFT);
+    const b = await user(tagB, RIGHT);
+    const conv = await openConversation(a, b);
+    await finishOpeningRound(a, b, conv, generateNextQuestion);
+    return { a, b, conv };
+  }
+
+  it("1. queue rows never expose other people's account ids; safe queue state still reads", async () => {
+    const a = await user("av-a", LEFT);
+    await a.client.rpc("join_queue", { p_notify_email: false });
+    const safe = await a.client.from("availability_requests").select("id, status, expires_at, notify_email, created_at, paused_reason, broaden, session_start").in("status", ["waiting", "invited"]).maybeSingle();
+    expect(safe.error).toBeNull();
+    expect(safe.data?.status).toBe("waiting");
+    const leak = await a.client.from("availability_requests").select("avoid_account_ids").eq("account_id", a.id);
+    expect(leak.error?.code).toBe("42501");
+    const star = await a.client.from("availability_requests").select("*").eq("account_id", a.id);
+    expect(star.error?.code).toBe("42501");
+    await a.client.rpc("leave_queue");
+  });
+
+  it("2. onboarding, political answers and consent cannot be written directly; validated paths still work", async () => {
+    const u = await user("dw-a", LEFT, false);
+    const r1 = await u.client.from("accounts").update({ onboarding_complete: true }).eq("id", u.id);
+    expect(r1.error?.code).toBe("42501");
+    const { data: acct } = await admin().from("accounts").select("onboarding_complete").eq("id", u.id).single();
+    expect(acct!.onboarding_complete).toBe(false);
+    const r2 = await u.client.from("profiles").update({ political_answers: { public_services: 5 } }).eq("account_id", u.id);
+    expect(r2.error?.code).toBe("42501");
+    const r3 = await u.client.from("consent_events").insert({ account_id: u.id, kind: "terms", version: "v9", granted: true });
+    expect(r3.error?.code).toBe("42501");
+    const r4 = await u.client.rpc("complete_onboarding", { p_age_band: "25-34", p_region: "midwest", p_community: "suburban", p_life_context: [], p_share_context: false, p_political_answers: { public_services: 5 }, p_political_nonanswers: {}, p_issue_priorities: [], p_questionnaire_version: 2, p_terms_version: "test" });
+    expect(r4.error?.code).toBe("P0001");
+    const r5 = await u.client.rpc("record_consent", { p_kind: "terms", p_version: "v1", p_granted: true });
+    expect(r5.error?.code).toBe("P0001");
+    // the intended paths
+    const ok1 = await u.client.rpc("complete_onboarding", { p_age_band: "25-34", p_region: "midwest", p_community: "suburban", p_life_context: ["parent"], p_share_context: false, p_political_answers: LEFT, p_political_nonanswers: {}, p_issue_priorities: [], p_questionnaire_version: 2, p_terms_version: "test" });
+    expect(ok1.error).toBeNull();
+    const ok2 = await u.client.from("profiles").update({ timezone_override: "Europe/Berlin" }).eq("account_id", u.id);
+    expect(ok2.error).toBeNull();
+    const ok3 = await u.client.rpc("record_consent", { p_kind: "friend_push", p_version: "v1", p_granted: true });
+    expect(ok3.error).toBeNull();
+    const { data: prof } = await u.client.from("profiles").select("timezone_override, political_answers, age_band").eq("account_id", u.id).single();
+    expect(prof).toMatchObject({ timezone_override: "Europe/Berlin", age_band: "25-34" });
+    expect(prof!.political_answers).toEqual(LEFT);
+    const { data: consents } = await u.client.from("consent_events").select("kind").eq("account_id", u.id).order("created_at");
+    expect(consents!.map((c) => c.kind).sort()).toEqual(["friend_push", "profile_context", "terms"]);
+    await u.client.from("reminder_prefs").upsert({ account_id: u.id, email_enabled: true });
+    const { data: rp } = await u.client.from("reminder_prefs").select("email_enabled").eq("account_id", u.id).single();
+    expect(rp!.email_enabled).toBe(true);
+  });
+
+  it("3. the live 'leave' action refuses friend threads", async () => {
+    const { a, tid } = await befriend("lv-a", "lv-b");
+    const r = await a.client.rpc("leave_conversation", { p_conversation: tid });
+    expect(r.error?.code).toBe("P0001");
+    const { data: c } = await admin().from("conversations").select("status").eq("id", tid).single();
+    expect(c!.status).toBe("chatting");
+  });
+
+  it("4. simultaneous 'yes' decisions create exactly one friendship; repeats, removal and block races stay consistent", async () => {
+    const a = await user("sy-a", LEFT);
+    const b = await user("sy-b", RIGHT);
+    const conv = await openConversation(a, b);
+    await a.client.rpc("leave_conversation", { p_conversation: conv });
+    const [ra, rb] = await Promise.all([
+      a.client.rpc("set_connection_decision", { p_conversation: conv, p_decision: true }),
+      b.client.rpc("set_connection_decision", { p_conversation: conv, p_decision: true }),
+    ]);
+    expect(ra.error).toBeNull(); expect(rb.error).toBeNull();
+    expect([ra.data.status, rb.data.status]).toContain("connected");
+    const conns = async () => (await admin().from("connections").select("id, status").or(`account_a.eq.${a.id},account_b.eq.${a.id}`)).data!;
+    expect(await conns()).toHaveLength(1);
+    // repeated submissions
+    const [r2, r3] = await Promise.all([a.client.rpc("set_connection_decision", { p_conversation: conv, p_decision: true }), a.client.rpc("set_connection_decision", { p_conversation: conv, p_decision: true })]);
+    expect(r2.data.status).toBe("connected"); expect(r3.data.status).toBe("connected");
+    expect(await conns()).toHaveLength(1);
+    // acceptance racing with removal: one connection, ended, never two unrevoked consents while ended
+    const cid = (await conns())[0].id;
+    await Promise.all([a.client.rpc("remove_friend", { p_connection: cid }), b.client.rpc("set_connection_decision", { p_conversation: conv, p_decision: true })]);
+    let cs = await conns();
+    expect(cs).toHaveLength(1);
+    expect(cs[0].status).toBe("ended");
+    const { data: live } = await admin().from("connection_requests").select("participant_id").eq("conversation_id", conv).is("revoked_at", null);
+    expect(live!.length).toBeLessThan(2);
+    // restoration after removal needs both again
+    await a.client.rpc("set_connection_decision", { p_conversation: conv, p_decision: true });
+    await b.client.rpc("set_connection_decision", { p_conversation: conv, p_decision: true });
+    cs = await conns();
+    expect(cs).toEqual([{ id: cid, status: "active" }]);
+    // acceptance racing with a block
+    const { data: tid } = await a.client.rpc("open_friend_thread", { p_connection: cid });
+    await Promise.all([a.client.rpc("block_peer", { p_conversation: tid }), b.client.rpc("set_connection_decision", { p_conversation: conv, p_decision: true })]);
+    cs = await conns();
+    expect(cs).toEqual([{ id: cid, status: "ended" }]);
+    const again = await b.client.rpc("set_connection_decision", { p_conversation: conv, p_decision: true });
+    expect(again.data.status).toBe("recorded");
+    expect((await conns())[0].status).toBe("ended");
+  });
+
+  it("5. moderation claims: stale, overlapping, cancelled and human-decided outcomes never overwrite each other; one delivery", async () => {
+    const { a, b, conv } = await chattingPair("mc-a", "mc-b");
+    const { data: pid } = await a.client.rpc("submit_message", { p_conversation: conv, p_client_send_id: "mc-1", p_body: "slow one" });
+    // worker A claims, then its lease expires (slow model call); worker B reclaims
+    let { data: ca } = await admin().rpc("claim_pending", { p_limit: 10 });
+    const tokenA = ca![0].claim_token as string;
+    expect(tokenA).toBeTruthy();
+    const none = await admin().rpc("claim_pending", { p_limit: 10 });
+    expect(none.data).toEqual([]);                                                  // leased: not claimable
+    await admin().from("pending_messages").update({ next_attempt_at: new Date(Date.now() - 1000).toISOString() }).eq("id", pid);
+    ({ data: ca } = await admin().rpc("claim_pending", { p_limit: 10 }));
+    const tokenB = ca![0].claim_token as string;
+    expect(tokenB).not.toBe(tokenA);
+    // A's late result is ignored; B's applies; nothing is delivered twice
+    const late = await admin().rpc("apply_moderation_decision", { p_pending: pid, p_decision: "allow", ...AUTO, p_claim_token: tokenA });
+    expect(late.data).toMatchObject({ skipped: true, reason: "stale claim" });
+    const stale = await admin().rpc("defer_pending", { p_pending: pid, p_error: "late timeout", p_max_attempts: 6, p_claim_token: tokenA });
+    expect(stale.error).toBeNull();
+    const { data: still } = await admin().from("pending_messages").select("claim_token, status").eq("id", pid).single();
+    expect(still).toEqual({ claim_token: tokenB, status: "pending" });
+    const ok = await admin().rpc("apply_moderation_decision", { p_pending: pid, p_decision: "allow", ...AUTO, p_claim_token: tokenB });
+    expect(ok.data.skipped).toBeUndefined();
+    const dup = await admin().rpc("apply_moderation_decision", { p_pending: pid, p_decision: "allow", ...AUTO, p_claim_token: tokenB });
+    expect(dup.data).toMatchObject({ skipped: true });
+    const { data: delivered } = await b.client.from("approved_messages").select("id").eq("conversation_id", conv).eq("body", "slow one");
+    expect(delivered).toHaveLength(1);
+    // automated results need a token
+    const { data: pid2 } = await a.client.rpc("submit_message", { p_conversation: conv, p_client_send_id: "mc-2", p_body: "second" });
+    const noToken = await admin().rpc("apply_moderation_decision", { p_pending: pid2, p_decision: "allow", ...AUTO });
+    expect(noToken.error?.code).toBe("P0001");
+    // a human decision on a pending row wins over the automated result that arrives later
+    ({ data: ca } = await admin().rpc("claim_pending", { p_limit: 10 }));
+    const t2 = ca!.find((r: { id: string }) => r.id === pid2)!.claim_token as string;
+    const human = await admin().rpc("apply_moderation_decision", { p_pending: pid2, p_decision: "block", ...HUMAN });
+    expect(human.data.skipped).toBeUndefined();
+    const lateAllow = await admin().rpc("apply_moderation_decision", { p_pending: pid2, p_decision: "allow", ...AUTO, p_claim_token: t2 });
+    expect(lateAllow.data).toMatchObject({ skipped: true });
+    const { data: p2 } = await admin().from("pending_messages").select("status").eq("id", pid2).single();
+    expect(p2!.status).toBe("blocked");
+    // cancellation while claimed
+    const { data: pid3 } = await a.client.rpc("submit_message", { p_conversation: conv, p_client_send_id: "mc-3", p_body: "third" });
+    ({ data: ca } = await admin().rpc("claim_pending", { p_limit: 10 }));
+    const t3 = ca!.find((r: { id: string }) => r.id === pid3)!.claim_token as string;
+    await a.client.rpc("cancel_pending", { p_pending: pid3 });
+    const afterCancel = await admin().rpc("apply_moderation_decision", { p_pending: pid3, p_decision: "allow", ...AUTO, p_claim_token: t3 });
+    expect(afterCancel.data).toMatchObject({ skipped: true });
+    const { data: p3 } = await admin().from("pending_messages").select("status").eq("id", pid3).single();
+    expect(p3!.status).toBe("cancelled");
+    // exhausted retries hold for a person; the human review action still works without a token
+    const { data: pid4 } = await a.client.rpc("submit_message", { p_conversation: conv, p_client_send_id: "mc-4", p_body: "fourth" });
+    await admin().from("pending_messages").update({ attempts: 6 }).eq("id", pid4);
+    ({ data: ca } = await admin().rpc("claim_pending", { p_limit: 10 }));
+    const t4 = ca!.find((r: { id: string }) => r.id === pid4)!.claim_token as string;
+    await admin().rpc("defer_pending", { p_pending: pid4, p_error: "outage", p_max_attempts: 6, p_claim_token: t4 });
+    let { data: p4 } = await admin().from("pending_messages").select("status").eq("id", pid4).single();
+    expect(p4!.status).toBe("review");
+    const stillLate = await admin().rpc("apply_moderation_decision", { p_pending: pid4, p_decision: "allow", ...AUTO, p_claim_token: t4 });
+    expect(stillLate.data).toMatchObject({ skipped: true });
+    await admin().rpc("apply_moderation_decision", { p_pending: pid4, p_decision: "allow", ...HUMAN });
+    ({ data: p4 } = await admin().from("pending_messages").select("status").eq("id", pid4).single());
+    expect(p4!.status).toBe("approved");
+    // immediate processing and the batch racing on the same message deliver it once
+    const { data: pid5 } = await a.client.rpc("submit_message", { p_conversation: conv, p_client_send_id: "mc-5", p_body: "fifth" });
+    await Promise.all([processPendingById(pid5), processBatchWithDeadline(20)]);
+    const { data: d5 } = await b.client.from("approved_messages").select("id").eq("conversation_id", conv).eq("body", "fifth");
+    expect(d5).toHaveLength(1);
+  });
+
+  it("6. the tick respects its deadline; unprocessed claims are released without consuming an attempt", async () => {
+    const { a, conv } = await chattingPair("dl-a", "dl-b");
+    const { data: pid } = await a.client.rpc("submit_message", { p_conversation: conv, p_client_send_id: "dl-1", p_body: "later" });
+    const out = await processBatchWithDeadline(20, Deadline.in(0));
+    expect(out).toEqual({ processed: 0, deferred: 0, released: 0 });  // nothing claimed when there is no time
+    const { data: claimed } = await admin().rpc("claim_pending", { p_limit: 10 });
+    const row = claimed!.find((r: { id: string }) => r.id === pid)!;
+    expect(row.attempts).toBe(1);
+    const { data: released } = await admin().rpc("release_pending_claim", { p_id: pid, p_claim_token: row.claim_token });
+    expect(released).toBe(true);
+    const { data: p } = await admin().from("pending_messages").select("attempts, claim_token").eq("id", pid).single();
+    expect(p).toEqual({ attempts: 0, claim_token: null });
+    const { data: again } = await admin().rpc("claim_pending", { p_limit: 10 });
+    expect(again!.map((r: { id: string }) => r.id)).toContain(pid);      // recoverable at once
+    const { data: stale } = await admin().rpc("release_pending_claim", { p_id: pid, p_claim_token: row.claim_token });
+    expect(stale).toBe(false);                                            // old token can't release the new claim
+    // a tick with no budget skips its model-bound stages but reports what it skipped
+    const tick = await runTick({ budgetMs: 10, source: "test" });
+    expect(tick.moderation).toEqual({ skipped: "deadline" });
+    expect(tick.questions).toEqual({ skipped: "deadline" });
+  });
+
+  it("7. matching racing with cancellation: cancelled entries are never resurrected or invited", async () => {
+    for (let i = 0; i < 3; i++) {
+      const a = await user(`mr-a${i}`, LEFT);
+      const b = await user(`mr-b${i}`, RIGHT);
+      await a.client.rpc("join_queue", { p_notify_email: false });
+      await b.client.rpc("join_queue", { p_notify_email: false });
+      await Promise.all([admin().rpc("run_matching"), a.client.rpc("leave_queue"), admin().rpc("run_matching")]);
+      const { data: rows } = await admin().from("availability_requests").select("account_id, status, matched_invitation_id").in("account_id", [a.id, b.id]).order("created_at");
+      const ra = rows!.find((r) => r.account_id === a.id)!;
+      expect(["cancelled"]).toContain(ra.status);
+      expect(ra.matched_invitation_id).toBeNull();
+      const { data: pendingInv } = await admin().from("invitation_participants").select("invitation_id, match_invitations!inner(status)").eq("account_id", a.id).eq("match_invitations.status", "pending");
+      expect(pendingInv).toEqual([]);
+      const rb = rows!.find((r) => r.account_id === b.id)!;
+      expect(["waiting", "invited", "expired"]).toContain(rb.status);
+      await b.client.rpc("leave_queue");
+      await resetQueue();
+    }
+  });
+
+  it("9. email outbox: atomic claims, retries with backoff, permanent failures, cancellation and relevance", async () => {
+    const a = await user("eo-a", LEFT);
+    const b = await user("eo-b", RIGHT);
+    await a.client.rpc("join_queue", { p_notify_email: true });
+    await b.client.rpc("join_queue", { p_notify_email: true });
+    const { data: pairs } = await admin().rpc("run_matching");
+    expect(pairs).toBe(1);
+    const rows = async () => (await admin().from("email_outbox").select("id, account_id, status, attempts, claim_token, next_attempt_at, last_error").in("account_id", [a.id, b.id]).order("created_at")).data!;
+    expect((await rows()).map((r) => r.status)).toEqual(["queued", "queued"]);
+    // two workers claiming at once get disjoint rows
+    const [c1, c2] = await Promise.all([admin().rpc("claim_email_outbox", { p_limit: 1 }), admin().rpc("claim_email_outbox", { p_limit: 1 })]);
+    const ids = [...c1.data!, ...c2.data!].map((r: { id: string }) => r.id);
+    expect(new Set(ids).size).toBe(2);
+    expect((await rows()).every((r) => r.status === "claimed")).toBe(true);
+    const nothing = await admin().rpc("claim_email_outbox", { p_limit: 10 });
+    expect(nothing.data).toEqual([]);
+    // expired lease → reclaimable; a transient failure goes back with backoff; a permanent one fails
+    await admin().from("email_outbox").update({ claimed_until: new Date(Date.now() - 1000).toISOString() }).in("id", ids);
+    let calls = 0;
+    let out = await sendQueuedEmails(10, Deadline.none(), { configured: true, deliver: async ({ to }) => { calls++; if (to === a.email) throw new Error("smtp 421 try later"); throw new PermanentEmailError("mailbox gone"); } });
+    expect(calls).toBe(2);
+    expect(out).toMatchObject({ retried: 1, failed: 1, sent: 0 });
+    const ra = (await rows()).find((r) => r.account_id === a.id)!;
+    expect(ra.status).toBe("queued");
+    expect(ra.attempts).toBe(2);
+    expect(new Date(ra.next_attempt_at).getTime()).toBeGreaterThan(Date.now() + 30_000);
+    // relevance: the invitation is declined → the queued notice is cancelled, never sent
+    const { data: inv } = await a.client.from("invitation_participants").select("invitation_id").eq("account_id", a.id);
+    await a.client.rpc("respond_invitation", { p_invitation: inv![0].invitation_id, p_accept: false });
+    expect((await rows()).find((r) => r.account_id === a.id)!.status).toBe("cancelled");
+    await admin().from("email_outbox").update({ next_attempt_at: new Date().toISOString() }).eq("id", ra.id);
+    calls = 0;
+    out = await sendQueuedEmails(10, Deadline.none(), { configured: true, deliver: async () => { calls++; return "mock"; } });
+    expect(calls).toBe(0);
+    // a fresh notice is delivered once; a finished row is never re-sent
+    await resetQueue();
+    await a.client.rpc("join_queue", { p_notify_email: true });
+    await b.client.rpc("join_queue", { p_notify_email: true });
+    await admin().rpc("run_matching");
+    calls = 0;
+    out = await sendQueuedEmails(10, Deadline.none(), { configured: true, deliver: async ({ id }) => { calls++; expect(id).toBeTruthy(); return "mock"; } });
+    expect(out.sent).toBe(2);
+    expect(calls).toBe(2);
+    out = await sendQueuedEmails(10, Deadline.none(), { configured: true, deliver: async () => { calls++; return "mock"; } });
+    expect(calls).toBe(2);
+    await a.client.rpc("leave_queue"); await b.client.rpc("leave_queue");
+  });
+
+  it("10. ordinary users cannot read admin metrics or probe blocks", async () => {
+    const a = await user("pr-a", LEFT);
+    const b = await user("pr-b", RIGHT);
+    expect((await a.client.rpc("metrics_summary", { p_since: "2026-01-01T00:00:00Z" })).error?.code).toBe("42501");
+    expect((await a.client.rpc("admin_metrics", { p_since: "2026-01-01T00:00:00Z" })).error?.code).toBe("42501");
+    expect((await a.client.rpc("is_blocked_either_way", { a: a.id, b: b.id })).error?.code).toBe("42501");
+    expect((await a.client.rpc("cfg", { p_key: "x", p_default: {} })).error?.code).toBe("42501");
+    expect((await a.client.rpc("take_rate_limit", { p_bucket: "send", p_limit: 1, p_window_seconds: 1 })).error?.code).toBe("42501");
+    // what users legitimately call still works
+    expect((await a.client.rpc("my_stats")).error).toBeNull();
+    expect((await a.client.rpc("friend_unread_total")).error).toBeNull();
+  });
+
+  it("11. fetching the unsubscribe link changes nothing; confirming it turns email reminders off", async () => {
+    const a = await user("un-a", LEFT);
+    await a.client.from("reminder_prefs").upsert({ account_id: a.id, email_enabled: true });
+    const t = unsubscribeToken(a.id);
+    const prefetch = await unsubGet(new Request(`http://localhost/api/reminders/unsubscribe?t=${t}`));
+    expect(prefetch.status).toBe(200);
+    expect(await prefetch.text()).toContain("Stop reminder emails?");
+    let { data: p } = await admin().from("reminder_prefs").select("email_enabled").eq("account_id", a.id).single();
+    expect(p!.email_enabled).toBe(true);
+    const bad = await unsubPost(new Request(`http://localhost/api/reminders/unsubscribe`, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: `t=${t}x` }));
+    expect(bad.status).toBe(400);
+    ({ data: p } = await admin().from("reminder_prefs").select("email_enabled").eq("account_id", a.id).single());
+    expect(p!.email_enabled).toBe(true);
+    const confirm = await unsubPost(new Request(`http://localhost/api/reminders/unsubscribe`, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: `t=${encodeURIComponent(t)}` }));
+    expect(confirm.status).toBe(200);
+    ({ data: p } = await admin().from("reminder_prefs").select("email_enabled").eq("account_id", a.id).single());
+    expect(p!.email_enabled).toBe(false);
+    // RFC 8058 one-click: token in the URL, provider body
+    await a.client.from("reminder_prefs").update({ email_enabled: true }).eq("account_id", a.id);
+    const oneClick = await unsubPost(new Request(`http://localhost/api/reminders/unsubscribe?t=${t}`, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: "List-Unsubscribe=One-Click" }));
+    expect(oneClick.status).toBe(200);
+    ({ data: p } = await admin().from("reminder_prefs").select("email_enabled").eq("account_id", a.id).single());
+    expect(p!.email_enabled).toBe(false);
+  });
+
+  it("13. retention removes finished queue entries, old metrics, finished outbox rows and old reminder sends, never active ones", async () => {
+    const a = await user("rt-a", LEFT);
+    const old = new Date(Date.now() - 400 * 86400_000).toISOString();
+    const ins = await admin().from("availability_requests").insert([
+      { account_id: a.id, status: "cancelled", created_at: old, ended_at: old, expires_at: old },
+      { account_id: a.id, status: "waiting", created_at: new Date().toISOString(), ended_at: null, expires_at: new Date(Date.now() + 3600_000).toISOString(), session_start: new Date().toISOString() },
+    ]);
+    expect(ins.error).toBeNull();
+    const me = await admin().from("metric_events").insert([{ kind: "queue_join", created_at: old }, { kind: "worker_tick", created_at: new Date(Date.now() - 10 * 86400_000).toISOString() }, { kind: "queue_join", created_at: new Date().toISOString() }]);
+    expect(me.error).toBeNull();
+    await admin().from("email_outbox").insert([{ account_id: a.id, template: "invitation", status: "sent", created_at: old }, { account_id: a.id, template: "invitation", status: "queued", created_at: old }]);
+    await admin().from("reminder_sends").insert({ account_id: a.id, session_start: old, channel: "email", target: "email", status: "sent", created_at: old });
+    const { data: r } = await admin().rpc("purge_retention");
+    expect(r.queue_entries).toBeGreaterThanOrEqual(1);
+    expect(r.metric_events).toBeGreaterThanOrEqual(2);
+    expect(r.outbox).toBeGreaterThanOrEqual(1);
+    expect(r.reminder_sends).toBeGreaterThanOrEqual(1);
+    const { data: q } = await admin().from("availability_requests").select("status").eq("account_id", a.id);
+    expect(q!.map((x) => x.status)).toEqual(["waiting"]);
+    const { data: o } = await admin().from("email_outbox").select("status").eq("account_id", a.id);
+    expect(o!.map((x) => x.status)).toEqual(["queued"]);   // queued work is never purged
+    await admin().from("availability_requests").delete().eq("account_id", a.id);
   });
 });

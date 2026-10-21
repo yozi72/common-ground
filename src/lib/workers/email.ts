@@ -1,29 +1,45 @@
-// Email outbox worker. Sends via Resend when RESEND_API_KEY is set, else via
-// SMTP when SMTP_* are set; otherwise marks rows 'skipped' so nothing silently
-// pretends to be sent.
+// Email outbox worker (match-ready notices). Rows are claimed atomically with a
+// lease (claim_email_outbox), re-checked for relevance right before sending
+// (recheck_email_outbox: invitation still pending, notice still requested) and
+// finished conditionally on the claim (finish_email_outbox). Transient provider
+// failures retry with backoff up to 5 attempts; permanent ones (no address,
+// unknown template) fail at once.
+//
+// Duplicate-delivery window: Resend sends carry an Idempotency-Key (the outbox
+// row id), so a retry after a timed-out-but-delivered call does not double
+// send. SMTP has no such key: if the SMTP call succeeds but the process dies
+// before finish_email_outbox runs, the lease expires and the notice can be sent
+// a second time. That window is bounded by the lease (2 minutes).
 import "server-only";
 import nodemailer from "nodemailer";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { env } from "@/lib/env";
+import { Deadline } from "./deadline";
 
-async function deliver(to: string, subject: string, text: string) {
+export type EmailDeliverer = (args: { id: string; to: string; subject: string; text: string }) => Promise<string>;
+
+export class PermanentEmailError extends Error {}
+
+async function deliverDefault({ id, to, subject, text }: { id: string; to: string; subject: string; text: string }): Promise<string> {
   const key = env.resendApiKey();
   if (key) {
     const res = await fetch("https://api.resend.com/emails", {
       method: "POST",
-      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json", "Idempotency-Key": `outbox/${id}` },
       body: JSON.stringify({ from: env.emailFrom(), to, subject, text }),
+      signal: AbortSignal.timeout(15_000),
     });
+    if (res.status >= 400 && res.status < 500 && res.status !== 429) throw new PermanentEmailError(`resend ${res.status}`);
     if (!res.ok) throw new Error(`resend ${res.status}`);
     return "resend";
   }
   const smtp = env.smtp();
   if (smtp) {
-    const transport = nodemailer.createTransport({ host: smtp.host, port: smtp.port, secure: smtp.port === 465, auth: { user: smtp.user, pass: smtp.pass } });
+    const transport = nodemailer.createTransport({ host: smtp.host, port: smtp.port, secure: smtp.port === 465, auth: { user: smtp.user, pass: smtp.pass }, connectionTimeout: 10_000, socketTimeout: 15_000 });
     await transport.sendMail({ from: `"${smtp.senderName}" <${smtp.user}>`, to, subject, text });
     return "smtp";
   }
-  return null;
+  throw new PermanentEmailError("no sender");
 }
 
 const TEMPLATES: Record<string, (siteUrl: string) => { subject: string; text: string }> = {
@@ -31,37 +47,38 @@ const TEMPLATES: Record<string, (siteUrl: string) => { subject: string; text: st
     subject: "Common Ground: someone is ready to talk",
     text: `You asked to be told when a conversation partner was found. The invitation expires in a few minutes.\n\nOpen: ${site}/lobby`,
   }),
-  reconnect_invitation: (site) => ({
-    subject: "Common Ground: a past conversation partner would like to talk again",
-    text: `Someone you connected with earlier has asked to reconnect. Nothing happens unless you accept.\n\nOpen: ${site}/connections`,
-  }),
 };
 
-export async function sendQueuedEmails(limit = 20) {
+export async function sendQueuedEmails(limit = 20, deadline: Deadline = Deadline.none(), deps: { deliver?: EmailDeliverer; configured?: boolean } = {}) {
   const admin = supabaseAdmin();
-  const { data: rows } = await admin.from("email_outbox").select("id, account_id, template").eq("status", "queued").order("created_at").limit(limit);
-  if (!rows?.length) return { sent: 0, skipped: 0, failed: 0 };
-  let sent = 0, skipped = 0, failed = 0;
-  for (const row of rows) {
+  const out = { sent: 0, retried: 0, failed: 0, skipped: 0, cancelled: 0 };
+  const configured = deps.configured ?? env.emailConfigured();
+  const deliver = deps.deliver ?? deliverDefault;
+  const { data: rows, error } = await admin.rpc("claim_email_outbox", { p_limit: limit });
+  if (error) throw new Error(`claim_email_outbox: ${error.message}`);
+  for (const row of (rows ?? []) as { id: string; account_id: string; template: string; claim_token: string }[]) {
+    const finish = (outcome: "sent" | "retry" | "failed" | "skipped", err?: string) =>
+      admin.rpc("finish_email_outbox", { p_id: row.id, p_claim_token: row.claim_token, p_outcome: outcome, p_error: err ?? null }).then((r) => (r.data as string | null) ?? "unknown");
+    if (deadline.remainingMs() < 20_000) { await finish("retry", "deadline"); out.retried++; continue; } // back to the queue, lease released
     const tpl = TEMPLATES[row.template];
-    if (!tpl) { await admin.from("email_outbox").update({ status: "failed", last_error: "unknown template" }).eq("id", row.id); failed++; continue; }
-    if (!env.emailConfigured()) {
-      await admin.from("email_outbox").update({ status: "skipped", last_error: "no email sender configured (RESEND_API_KEY or SMTP_*)" }).eq("id", row.id);
-      skipped++; continue;
-    }
+    if (!tpl) { await finish("failed", "unknown template"); out.failed++; continue; }
+    if (!configured) { await finish("skipped", "no email sender configured (RESEND_API_KEY or SMTP_*)"); out.skipped++; continue; }
+    // still mine, still relevant? (the invitation may have been declined or expired since the claim)
+    const { data: state } = await admin.rpc("recheck_email_outbox", { p_id: row.id, p_claim_token: row.claim_token });
+    if (state !== "claimed") { out.cancelled++; continue; }
     try {
       const { data: user } = await admin.auth.admin.getUserById(row.account_id);
       const to = user?.user?.email;
-      if (!to) throw new Error("no email on account");
+      if (!to) throw new PermanentEmailError("no email on account");
       const { subject, text } = tpl(env.siteUrl());
-      const via = await deliver(to, subject, text);
-      if (!via) throw new Error("no sender");
-      await admin.from("email_outbox").update({ status: "sent", sent_at: new Date().toISOString(), last_error: via }).eq("id", row.id);
-      sent++;
+      const via = await deliver({ id: row.id, to, subject, text });
+      const r = await finish("sent", via);
+      if (r === "sent") out.sent++; else out.cancelled++;
     } catch (e) {
-      await admin.from("email_outbox").update({ status: "failed", attempts: 1, last_error: (e as Error).message }).eq("id", row.id);
-      failed++;
+      const permanent = e instanceof PermanentEmailError;
+      const r = await finish(permanent ? "failed" : "retry", (e as Error).message);
+      if (r === "queued") out.retried++; else if (r === "failed") out.failed++; else out.cancelled++;
     }
   }
-  return { sent, skipped, failed };
+  return out;
 }

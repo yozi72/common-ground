@@ -4,8 +4,8 @@ import { useRouter } from "next/navigation";
 import { supabaseBrowser } from "@/lib/supabase/client";
 import { TwoCups } from "@/components/Illustrations";
 import { UNREAD_CHANGED } from "@/components/useUnread";
-import { mergeMessages, olderCursor, reachedStart, readMarkFor, readMarkAfter, PAGE_SIZE } from "@/lib/chat-history";
-import { latestMessages, olderMessages, actionablePending } from "@/lib/chat-queries";
+import { olderCursor, reachedStart, readMarkFor, readMarkAfter, PAGE_SIZE, gapCursor, reconcile, rangeOfNewestPage, rangeOfOlderPage, rangeOfNewerPage, withoutIds, compareMsgs } from "@/lib/chat-history";
+import { latestMessages, olderMessages, newerMessages, existingIds, actionablePending } from "@/lib/chat-queries";
 
 type Conv = { id: string; status: "opening" | "chatting" | "ended"; opening_question_count: number; questions_asked: number; end_reason: string | null; kind?: "live" | "friend" };
 type Question = { id: string; seq: number; phase: "opening" | "mid"; question_text: string; choices: string[]; status: "open" | "revealed" | "closed"; created_at: string; revealed_at: string | null };
@@ -21,7 +21,12 @@ export function Conversation({ conversationId, myParticipantId, myAlias, peerAli
   const [conv, setConv] = useState<Conv | null>(null);
   const [questions, setQuestions] = useState<Question[]>([]);
   const [answers, setAnswers] = useState<Answer[]>([]);
-  const [messages, setMessages] = useState<Msg[]>([]);      // everything loaded so far, oldest first (merged by id)
+  const [messages, setMessagesState] = useState<Msg[]>([]); // everything loaded so far, oldest first (merged by id)
+  const messagesRef = useRef<Msg[]>([]);                      // same, readable inside async loads
+  const setMessages = useCallback((next: Msg[] | ((prev: Msg[]) => Msg[])) => {
+    const v = typeof next === "function" ? next(messagesRef.current) : next;
+    messagesRef.current = v; setMessagesState(v);
+  }, []);
   const [latestFull, setLatestFull] = useState(false);      // the newest page was full → there may be older history
   const [historyDone, setHistoryDone] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -51,7 +56,26 @@ export function Conversation({ conversationId, myParticipantId, myAlias, peerAli
     setQuestions((q.data ?? []) as Question[]);
     setAnswers((a.data ?? []) as Answer[]);
     const latest = ((m.data ?? []) as Msg[]).slice().reverse();
-    if (!m.error) { setMessages((prev) => mergeMessages(prev, latest)); setLatestFull(latest.length >= PAGE); }
+    if (!m.error) {
+      // The newest page is authoritative for its own range (deletions inside it are
+      // dropped). If the cache ends before the page begins, messages may have arrived
+      // in between while we were away: catch up forward until the ranges meet.
+      const cached = messagesRef.current;
+      let merged = reconcile(cached, latest, rangeOfNewestPage(latest));
+      let cursor = gapCursor(cached, latest);
+      const pageOldest = latest[0] ?? null;
+      for (let i = 0; cursor && pageOldest && i < 25; i++) {
+        const { data, error } = await newerMessages(sb, conversationId, cursor, PAGE);
+        if (error) break;
+        const page = (data ?? []) as Msg[];
+        merged = reconcile(merged, page, rangeOfNewerPage(page, cursor));
+        const newest = page[page.length - 1];
+        if (page.length < PAGE || !newest || compareMsgs(newest, pageOldest) >= 0) break;
+        cursor = { created_at: newest.created_at, id: newest.id };
+      }
+      setMessages(merged);
+      setLatestFull(latest.length >= PAGE);
+    }
     if (!p.error) setPending(((p.data ?? []) as Pending[]).slice().reverse());
     setPartnerAway(!!n.data?.length);
     if (c.data?.status === "ended" && c.data?.kind !== "friend") router.push(`/c/${conversationId}/reflect`);
@@ -66,7 +90,30 @@ export function Conversation({ conversationId, myParticipantId, myAlias, peerAli
         .then((res) => { lastReadSent.current = readMarkAfter(mark, res.ok); if (res.ok) window.dispatchEvent(new Event(UNREAD_CHANGED)); })
         .catch(() => { lastReadSent.current = readMarkAfter(mark, false); });
     }
-  }, [conversationId, router]);
+  }, [conversationId, router, setMessages]);
+
+  // History outside the newest page can't be proven present by a limited query, so
+  // its ids are re-checked on reconnect and every minute: anything the server no
+  // longer has (deleted, expired by retention) leaves the cache.
+  const verifyHistory = useCallback(async () => {
+    const cached = messagesRef.current;
+    if (!cached.length) return;
+    const sb = supabaseBrowser();
+    const { data: newest, error } = await latestMessages(sb, conversationId, PAGE);
+    if (error) return;
+    const page = ((newest ?? []) as Msg[]).slice().reverse();
+    let merged = reconcile(cached, page, rangeOfNewestPage(page));
+    const pageOldest = page[0] ?? null;
+    const outside = pageOldest ? merged.filter((m) => compareMsgs(m, pageOldest) < 0) : [];
+    for (let i = 0; i < outside.length; i += 200) {
+      const chunk = outside.slice(i, i + 200).map((m) => m.id);
+      const { data, error: e2 } = await existingIds(sb, conversationId, chunk);
+      if (e2) return;
+      const present = new Set((data ?? []).map((r: { id: string }) => r.id));
+      merged = withoutIds(merged, chunk.filter((id) => !present.has(id)));
+    }
+    setMessages(merged);
+  }, [conversationId, setMessages]);
 
   // Earlier history, one page at a time, strictly before the oldest message we
   // have, in (created_at, id) order so equal timestamps page correctly.
@@ -78,7 +125,7 @@ export function Conversation({ conversationId, myParticipantId, myAlias, peerAli
     setLoadingMore(false);
     if (error) { setError("Couldn't load earlier messages. Try again."); return; }
     const page = (data ?? []) as Msg[];
-    setMessages((prev) => mergeMessages(prev, page));
+    setMessages((prev) => reconcile(prev, page, rangeOfOlderPage(page, cursor)));
     if (reachedStart(page.length)) setHistoryDone(true);
   }
   const canLoadOlder = !historyDone && latestFull;
@@ -90,19 +137,22 @@ export function Conversation({ conversationId, myParticipantId, myAlias, peerAli
     const sb = supabaseBrowser();
     const ch = sb.channel(`conv:${conversationId}`)
       .on("postgres_changes", { event: "*", schema: "public", table: "approved_messages", filter: `conversation_id=eq.${conversationId}` }, load)
+      // deletes carry only the id (no conversation filter possible); drop it if we have it
+      .on("postgres_changes", { event: "DELETE", schema: "public", table: "approved_messages" }, (payload: { old?: { id?: string } | null }) => { const id = payload.old?.id; if (id) setMessages((prev) => withoutIds(prev, [id])); })
       .on("postgres_changes", { event: "*", schema: "public", table: "conversation_questions", filter: `conversation_id=eq.${conversationId}` }, load)
       .on("postgres_changes", { event: "*", schema: "public", table: "question_answers", filter: `conversation_id=eq.${conversationId}` }, load)
       .on("postgres_changes", { event: "UPDATE", schema: "public", table: "conversations", filter: `id=eq.${conversationId}` }, load)
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "notifications" }, load)
       .subscribe();
     const poll = setInterval(load, 5000);
-    const onVisible = () => { if (document.visibilityState === "visible") load(); };
+    const onVisible = () => { if (document.visibilityState === "visible") { load(); verifyHistory(); } };
     document.addEventListener("visibilitychange", onVisible);
+    const verify = setInterval(verifyHistory, 60_000);
     const hb = setInterval(() => { if (!isFriend) fetch(`/api/conversations/${conversationId}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "heartbeat" }) }); }, 30_000);
     const clock = setInterval(() => setNow(Date.now()), 1000);
     const clock0 = setTimeout(() => setNow(Date.now()), 0);
-    return () => { sb.removeChannel(ch); clearInterval(poll); clearInterval(hb); clearInterval(clock); clearTimeout(clock0); document.removeEventListener("visibilitychange", onVisible); };
-  }, [conversationId, load, isFriend]);
+    return () => { sb.removeChannel(ch); clearInterval(poll); clearInterval(hb); clearInterval(clock); clearTimeout(clock0); clearInterval(verify); document.removeEventListener("visibilitychange", onVisible); };
+  }, [conversationId, load, verifyHistory, isFriend, setMessages]);
 
   // Faster polling while something of mine is still being checked.
   const hasLivePending = pending.some((p) => p.status === "pending");

@@ -2,53 +2,62 @@
 // gateway, and enforces the decision through apply_moderation_decision — the
 // only path that writes approved_messages. Any failure defers the message;
 // nothing is ever passed on error.
+//
+// Claim ownership: every claim (batch or immediate) carries a token and a lease
+// (75 s, longer than the model timeout × retries). A result or deferral is
+// applied only while that token is the live claim, so a slow worker whose lease
+// expired, an overlapping worker, a cancellation or a human decision can never
+// be overwritten by a stale automated outcome. A worker that runs out of time
+// hands unprocessed claims back without consuming an attempt.
 import "server-only";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { moderate, GatewayError } from "@/lib/ai/gateway";
 import { runDetectors } from "@/lib/ai/detectors";
 import { generateNextQuestion } from "./questions";
+import { Deadline } from "./deadline";
 
 type PendingRow = {
   id: string; conversation_id: string; sender_participant_id: string; kind: "chat" | "answer";
-  question_id: string | null; body: string; attempts: number;
+  question_id: string | null; body: string; attempts: number; claim_token: string;
 };
 
-export async function processPendingBatch(limit = 10): Promise<{ processed: number; deferred: number }> {
-  const admin = supabaseAdmin();
-  // Deferred rows get a future next_attempt_at, so looping until a batch comes back empty terminates.
-  let processed = 0, deferred = 0;
-  for (;;) {
-    const r = await claimAndProcess(admin, limit);
-    processed += r.processed; deferred += r.deferred;
-    if (r.processed + r.deferred < limit) break;
-  }
-  return { processed, deferred };
-}
+export const CLAIM_LEASE_SECONDS = 75;      // ≥ gateway timeout (25 s) × 2 tries + margin
+const PER_MESSAGE_BUDGET_MS = 30_000;       // worst case one moderation call incl. a retry
+const BATCH = 5;                            // claim in small batches so nothing waits on a long lease
 
-async function claimAndProcess(admin: ReturnType<typeof supabaseAdmin>, limit: number) {
-  const { data, error } = await admin.rpc("claim_pending", { p_limit: limit });
-  if (error) throw new Error(`claim_pending: ${error.message}`);
-  const rows = (data ?? []) as PendingRow[];
-  let processed = 0, deferred = 0;
-  for (const row of rows) {
-    const ok = await processOne(row);
-    if (ok) processed++; else deferred++;
+export async function processPendingBatch(limit = 10, deadline: Deadline = Deadline.none()): Promise<{ processed: number; deferred: number; released: number }> {
+  const admin = supabaseAdmin();
+  const out = { processed: 0, deferred: 0, released: 0 };
+  let left = limit;
+  while (left > 0 && deadline.remainingMs() > PER_MESSAGE_BUDGET_MS) {
+    // never claim more than can plausibly start before the deadline
+    const n = Math.min(BATCH, left, Math.max(1, Math.floor(deadline.remainingMs() / PER_MESSAGE_BUDGET_MS)));
+    const { data, error } = await admin.rpc("claim_pending", { p_limit: n, p_lease_seconds: CLAIM_LEASE_SECONDS });
+    if (error) throw new Error(`claim_pending: ${error.message}`);
+    const rows = (data ?? []) as PendingRow[];
+    if (!rows.length) break;
+    for (let i = 0; i < rows.length; i++) {
+      if (deadline.remainingMs() <= PER_MESSAGE_BUDGET_MS) {
+        // out of time: give the rest back untouched (no attempt consumed)
+        for (const r of rows.slice(i)) { await admin.rpc("release_pending_claim", { p_id: r.id, p_claim_token: r.claim_token }); out.released++; }
+        return out;
+      }
+      const ok = await processOne(rows[i]);
+      if (ok) out.processed++; else out.deferred++;
+    }
+    left -= rows.length;
+    if (rows.length < n) break;
   }
-  return { processed, deferred };
+  return out;
 }
 
 // Called right after a send so the common case is fast; the cron tick retries anything missed.
 export async function processPendingById(id: string) {
   const admin = supabaseAdmin();
-  // claim just this one if it is still pending and due
-  const { data } = await admin
-    .from("pending_messages")
-    .update({ attempts: 1, next_attempt_at: new Date(Date.now() + 20_000).toISOString() })
-    .eq("id", id).eq("status", "pending").eq("attempts", 0)
-    .select("id, conversation_id, sender_participant_id, kind, question_id, body, attempts")
-    .maybeSingle();
-  if (!data) return;
-  await processOne(data as PendingRow);
+  const { data } = await admin.rpc("claim_pending_by_id", { p_id: id, p_lease_seconds: CLAIM_LEASE_SECONDS });
+  const row = ((data ?? []) as PendingRow[])[0];
+  if (!row) return;
+  await processOne(row);
 }
 
 async function processOne(row: PendingRow): Promise<boolean> {
@@ -78,10 +87,12 @@ async function processOne(row: PendingRow): Promise<boolean> {
       p_model: result.model,
       p_raw_valid: result.rawValid,
       p_latency_ms: result.latencyMs,
+      p_claim_token: row.claim_token,
     });
     if (error) throw new Error(`apply_moderation_decision: ${error.message}`);
 
-    const o = (outcome ?? {}) as { question_due?: boolean; revealed?: boolean };
+    const o = (outcome ?? {}) as { question_due?: boolean; revealed?: boolean; skipped?: boolean };
+    if (o.skipped) return true; // stale claim or state changed meanwhile: the newer outcome stands
     if (o.question_due) await generateNextQuestion(row.conversation_id, "mid");
     if (o.revealed) await advanceAfterReveal(row.conversation_id);
     return true;
@@ -94,11 +105,12 @@ async function processOne(row: PendingRow): Promise<boolean> {
         p_pending: row.id, p_decision: "review", p_categories: ["model_refusal"],
         p_user_explanation: "Automated review couldn't assess this message, so it's held for a human reviewer.",
         p_suggested_revision: null, p_confidence: 0, p_detector_hits: [], p_provider: "anthropic", p_model: null, p_raw_valid: false, p_latency_ms: null,
+        p_claim_token: row.claim_token,
       });
       return false;
     }
     console.warn(`[moderation] deferring ${row.id}: ${msg}`);
-    await admin.rpc("defer_pending", { p_pending: row.id, p_error: msg, p_max_attempts: 6 });
+    await admin.rpc("defer_pending", { p_pending: row.id, p_error: msg, p_max_attempts: 6, p_claim_token: row.claim_token });
     return false;
   }
 }

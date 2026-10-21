@@ -17,6 +17,7 @@ export default function Privacy() {
           <li>Delivered messages in a friend chat: each one is deleted 30 days after it was sent, even if the chat stays open.</li>
           <li>Held or blocked messages: deleted after 7 days (longer if under appeal).</li>
           <li>Reports: kept up to a year for safety review.</li>
+          <li>Waiting-list entries: deleted 90 days after they end. Aggregate usage counters (joins, waits, deliveries; never message content or answers): kept up to a year.</li>
           <li>Your matching questionnaire answers and the issues you marked as mattering most: used only to pair you with someone who answered differently (we compare answers issue by issue; there is no left/right score or label). Only you can see them. They are never shown to another person, never included in notifications or analytics, and never sent to the AI that writes conversation questions.</li>
           <li>Deleting your account removes your account, profile, messages, and connections immediately.</li>
         </ul>

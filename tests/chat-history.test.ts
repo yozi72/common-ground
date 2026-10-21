@@ -57,3 +57,77 @@ describe("chat history: merge, paging, read marks (fifth review)", () => {
     expect(readMarkAfter(base.newest, true)).toBe(base.newest);
   });
 });
+
+import { gapCursor, newerFilter, reconcile, rangeOfNewestPage, rangeOfOlderPage, rangeOfNewerPage, withoutIds } from "@/lib/chat-history";
+
+describe("chat history: gaps after a disconnect and deletions (audit)", () => {
+  it("detects a gap larger than one page and catches up forward until the ranges meet", () => {
+    // cache 1..200 (and the client believes there is nothing earlier)
+    let have = mergeMessages([], range(1, 200));
+    // 300 messages arrive while disconnected; refresh returns the newest page 301..500
+    const newest = range(301, 500).reverse();
+    expect(gapCursor(have, newest)).toEqual({ created_at: msg(200).created_at, id: "m0200" });
+    have = reconcile(have, newest, rangeOfNewestPage(newest));
+    // forward pages from the cursor: 201..400, then 401..500 overlaps the newest page
+    let cursor = gapCursor(mergeMessages([], range(1, 200)), newest)!;
+    expect(newerFilter(cursor)).toBe(`created_at.gt.${msg(200).created_at},and(created_at.eq.${msg(200).created_at},id.gt.m0200)`);
+    const page1 = range(201, 400);
+    have = reconcile(have, page1, rangeOfNewerPage(page1, cursor));
+    cursor = { created_at: msg(400).created_at, id: "m0400" };
+    const page2 = range(401, 500); // short page: the server has nothing newer
+    have = reconcile(have, page2, rangeOfNewerPage(page2, cursor));
+    expect(have.length).toBe(500);
+    expect(ids(have).slice(199, 203)).toEqual(["m0200", "m0201", "m0202", "m0203"]);
+    // no gap when the ranges overlap, or when the newest page is short
+    expect(gapCursor(range(1, 300), range(201, 400).reverse())).toBeNull();
+    expect(gapCursor(range(1, 200), range(201, 250).reverse())).toBeNull();
+    expect(gapCursor([], newest)).toBeNull();
+  });
+
+  it("drops a message deleted inside the refreshed newest page, keeps older history", () => {
+    let have = mergeMessages([], range(1, 400));
+    const newest = range(201, 400).filter((m) => m.id !== "m0350").reverse(); // 350 was deleted server-side
+    have = reconcile(have, newest, rangeOfNewestPage(newest));
+    expect(ids(have)).not.toContain("m0350");
+    expect(ids(have)).toContain("m0100"); // outside the page's range: absence proves nothing
+    expect(have.length).toBe(399);
+  });
+
+  it("drops a message deleted inside an older page's range and respects the exclusive cursor", () => {
+    let have = mergeMessages([], range(1, 400));
+    const cursor = { created_at: msg(201).created_at, id: "m0201" };
+    const older = range(1, 200).filter((m) => m.id !== "m0150").reverse();
+    have = reconcile(have, older, rangeOfOlderPage(older, cursor));
+    expect(ids(have)).not.toContain("m0150");
+    expect(ids(have)).toContain("m0201");
+    expect(ids(have)).toContain("m0300");
+    expect(have.length).toBe(399);
+    // a short older page extends the proven range to the beginning of history
+    const shortOlder = range(2, 200).reverse();                // m0001 vanished (retention)
+    have = reconcile(have, shortOlder, rangeOfOlderPage(shortOlder, cursor));
+    expect(ids(have)).not.toContain("m0001");
+  });
+
+  it("does not drop older history when it just fell out of the newest page", () => {
+    let have = mergeMessages([], range(1, 400));
+    const newest = range(202, 401).reverse();                  // 401 arrived; 201 is now older than the page
+    have = reconcile(have, newest, rangeOfNewestPage(newest));
+    expect(ids(have)).toContain("m0201");
+    expect(have.length).toBe(401);
+  });
+
+  it("removes explicitly deleted ids (realtime DELETE, id verification)", () => {
+    const have = mergeMessages([], range(1, 5));
+    expect(ids(withoutIds(have, ["m0002", "nope"]))).toEqual(["m0001", "m0003", "m0004", "m0005"]);
+  });
+
+  it("messages arriving during pagination are merged, not lost", () => {
+    let have = mergeMessages([], range(201, 400));
+    const cursor = { created_at: msg(201).created_at, id: "m0201" };
+    const older = range(1, 200).reverse();
+    have = reconcile(have, older, rangeOfOlderPage(older, cursor));
+    const newest = range(202, 401).reverse();                  // arrived meanwhile
+    have = reconcile(have, newest, rangeOfNewestPage(newest));
+    expect(have.length).toBe(401);
+  });
+});

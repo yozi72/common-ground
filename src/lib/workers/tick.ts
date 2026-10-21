@@ -1,5 +1,11 @@
-// One worker tick: housekeeping, matching, moderation retries, emails.
-// Idempotent; safe to run every 15–30 seconds from any scheduler.
+// One worker tick: housekeeping, matching, reminders, emails, pushes, then
+// moderation retries and question generation inside what is left of the
+// budget. Idempotent; safe to run every minute from any scheduler.
+//
+// Budget: the route's maxDuration (60 s) minus a safety margin. Cheap, time-
+// sensitive stages (reminders, emails, friend pushes) run before the model-
+// bound ones so a moderation backlog can never starve them; moderation claims
+// only what can start before the deadline and releases the rest.
 import "server-only";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { processPendingBatch, advanceAfterReveal } from "./moderation";
@@ -7,39 +13,53 @@ import { sendQueuedEmails } from "./email";
 import { sendDueReminders } from "./reminders";
 import { sendFriendMessagePushes } from "./friend-push";
 import { generateNextQuestion } from "./questions";
+import { Deadline } from "./deadline";
 
-export async function runTick(opts: { retention?: boolean; source?: string } = {}) {
+export const TICK_MAX_DURATION_SECONDS = 60;
+const SAFETY_MARGIN_MS = 12_000;
+const QUESTION_BUDGET_MS = 20_000; // one generation call worst case
+
+export async function runTick(opts: { retention?: boolean; source?: string; budgetMs?: number } = {}) {
   const admin = supabaseAdmin();
+  const deadline = Deadline.in(opts.budgetMs ?? TICK_MAX_DURATION_SECONDS * 1000 - SAFETY_MARGIN_MS);
   const out: Record<string, unknown> = {};
+  const stage = async (name: string, fn: () => Promise<unknown>, minMs = 1500) => {
+    if (deadline.remainingMs() < minMs) { out[name] = { skipped: "deadline" }; return; }
+    try { out[name] = await fn(); } catch (e) { out[name] = { error: (e as Error).message }; }
+  };
   // heartbeat row so operators can see the scheduler is alive (Review → Metrics / SQL)
   await admin.from("metric_events").insert({ kind: "worker_tick", meta: { source: opts.source ?? "unknown" } });
 
-  const { data: stale, error: e1 } = await admin.rpc("expire_stale");
-  out.expire = e1 ? { error: e1.message } : stale;
+  await stage("expire", async () => { const { data, error } = await admin.rpc("expire_stale"); if (error) throw new Error(error.message); return data; });
+  await stage("matching", async () => { const { data, error } = await admin.rpc("run_matching"); if (error) throw new Error(error.message); return { pairs: data }; });
+  // time-sensitive and cheap: never behind the model-bound stages
+  await stage("reminders", () => sendDueReminders());
+  await stage("email", () => sendQueuedEmails(20, deadline));
+  await stage("friendPush", () => sendFriendMessagePushes());
 
-  const { data: pairs, error: e2 } = await admin.rpc("run_matching");
-  out.matching = e2 ? { error: e2.message } : { pairs };
+  await stage("moderation", () => processPendingBatch(20, deadline), 5000);
 
   // Conversations that opened but have no question yet (e.g. generation failed at open time)
-  const { data: fresh } = await admin.from("conversations").select("id").eq("status", "opening").eq("questions_asked", 0).limit(20);
-  for (const c of fresh ?? []) {
-    try { await generateNextQuestion(c.id, "opening"); } catch (e) { console.warn("[tick] question", (e as Error).message); }
-  }
-  // Opening conversations whose current question was revealed but the next never arrived
-  const { data: stuck } = await admin.from("conversations").select("id").eq("status", "opening").gt("questions_asked", 0).limit(50);
-  for (const c of stuck ?? []) {
-    try { await advanceAfterReveal(c.id); } catch (e) { console.warn("[tick] advance", (e as Error).message); }
-  }
-
-  try { out.moderation = await processPendingBatch(20); } catch (e) { out.moderation = { error: (e as Error).message }; }
-  try { out.email = await sendQueuedEmails(); } catch (e) { out.email = { error: (e as Error).message }; }
-  try { out.reminders = await sendDueReminders(); } catch (e) { out.reminders = { error: (e as Error).message }; }
-  try { out.friendPush = await sendFriendMessagePushes(); } catch (e) { out.friendPush = { error: (e as Error).message }; }
+  await stage("questions", async () => {
+    let asked = 0, advanced = 0;
+    const { data: fresh } = await admin.from("conversations").select("id").eq("status", "opening").eq("questions_asked", 0).limit(20);
+    for (const c of fresh ?? []) {
+      if (deadline.remainingMs() < QUESTION_BUDGET_MS) break;
+      try { await generateNextQuestion(c.id, "opening"); asked++; } catch (e) { console.warn("[tick] question", (e as Error).message); }
+    }
+    // Opening conversations whose current question was revealed but the next never arrived
+    const { data: stuck } = await admin.from("conversations").select("id").eq("status", "opening").gt("questions_asked", 0).limit(50);
+    for (const c of stuck ?? []) {
+      if (deadline.remainingMs() < QUESTION_BUDGET_MS) break;
+      try { await advanceAfterReveal(c.id); advanced++; } catch (e) { console.warn("[tick] advance", (e as Error).message); }
+    }
+    return { asked, advanced };
+  }, QUESTION_BUDGET_MS);
 
   if (opts.retention) {
-    const { data, error } = await admin.rpc("purge_retention");
-    out.retention = error ? { error: error.message } : data;
+    await stage("retention", async () => { const { data, error } = await admin.rpc("purge_retention"); if (error) throw new Error(error.message); return data; });
   }
+  out.remainingMs = deadline.remainingMs();
   return out;
 }
 
@@ -51,5 +71,5 @@ export function maybeTick(minIntervalMs = 20_000) {
   const now = Date.now();
   if (now - lastOpportunisticTick < minIntervalMs) return Promise.resolve(null);
   lastOpportunisticTick = now;
-  return runTick().catch((e) => { console.warn("[tick] opportunistic", (e as Error).message); return null; });
+  return runTick({ budgetMs: 25_000 }).catch((e) => { console.warn("[tick] opportunistic", (e as Error).message); return null; });
 }

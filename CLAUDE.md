@@ -29,6 +29,9 @@ An anonymous, moderated text-conversation pilot that pairs adults who answered a
 - Nothing reaches `approved_messages` except through `apply_moderation_decision`. Pending messages are sender-only and excluded from Realtime.
 - Political answers and issue priorities are used for matching only; `buildQuestionInput()` is the only path to the question model and must never include them.
 - Chat clients keep every loaded message and merge by id (`src/lib/chat-history.ts`); never replace the loaded set with the newest page. Read queries for the chat live in `src/lib/chat-queries.ts` and are shared with tests.
+- Moderation results carry the claim token (`apply_moderation_decision(..., p_claim_token)`); human decisions pass `p_provider = 'human'` and no token. Never apply an automated outcome without the token.
+- Clients never write `accounts`, `profiles` (except `timezone_override`) or `consent_events` directly: `complete_onboarding` and `record_consent` are the paths.
+- Internal helper functions are revoked from `authenticated`; anything a client must call needs an explicit grant and its own authorization check.
 - Push worker updates are conditional on the claim (`finish_push_queue` / `recheck_push_queue`); never write a terminal push status unconditionally.
 - UI: light warm theme, rounded components, one top bar + bottom tab bar (Talk / Friends / Profile [/ Review]), one primary action per screen, no browser `confirm()`/`prompt()`.
 - Lint rules forbid `Date.now()` in render and `setState` directly in effects; use `serverNow()` / deferred effects.

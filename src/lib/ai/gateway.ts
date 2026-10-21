@@ -182,7 +182,7 @@ let anthropic: Anthropic | null = null;
 async function callAnthropic(system: string, user: string, maxTokens: number, model: string = env.anthropicModel()): Promise<string> {
   const key = env.anthropicApiKey();
   if (!key) throw new GatewayError("ANTHROPIC_API_KEY not configured", false);
-  anthropic ??= new Anthropic({ apiKey: key, maxRetries: 2, timeout: 30_000 });
+  anthropic ??= new Anthropic({ apiKey: key, maxRetries: 1, timeout: 25_000 }); // 2 tries × 25 s stays inside the 75 s moderation claim lease
   try {
     // Thinking is always on for current models; `effort: "low"` keeps these short
     // classification calls fast. Thinking tokens count toward max_tokens, hence the headroom.

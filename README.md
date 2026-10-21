@@ -76,7 +76,7 @@ Run `npm test` with `.env.local` exported, e.g. `set -a; source .env.local; set 
 ### Verification evidence (2026-10-20, local Supabase via Colima, `AI_PROVIDER=mock`)
 
 - `npm run typecheck`, `npx eslint src`, `next build`: clean.
-- `npm test`: 102 passed, 0 failed across 10 files (latest run, after the fifth review fixes). Two bugs were found and fixed on the way: the lobby's "am I in a live conversation" query hit a PostgREST embed ambiguity (now uses the explicit FK hint and has a regression test), and the moderation worker only drained 10 pending rows per run (now loops).
+- `npm test`: 125 passed, 0 failed across 11 files (latest run, after the combined audit fixes). Two bugs were found and fixed on the way: the lobby's "am I in a live conversation" query hit a PostgREST embed ambiguity (now uses the explicit FK hint and has a regression test), and the moderation worker only drained 10 pending rows per run (now loops).
 - Manual two-sided run: user A in the app (magic link via Mailpit → onboarding → queue), user B via `scripts/qa-partner.mjs` (a real second account driving the same RPCs; QA harness only, not product code). Observed: invitation arrived in-app in ~10 s and opened on mutual accept; Q1 answer stayed hidden until both answered, then both appeared together; a custom answer with a phone number was held with "This looks like it contains a phone number", the recipient saw nothing, accepting the rewording delivered `[number removed]`; all 10 opening questions revealed and chat opened; chat delivered both ways after approval; "you people are vermin and I will find you" was blocked with explanation + appeal; leaving ended the conversation for both (partner script saw `ended` within one poll), reflection saved, mutual "yes" produced a connection visible under Connections with aliases preserved; admin console renders for the admin role. Screens checked at 375 px width (onboarding, lobby, conversation, reflection, connections, admin).
 - Noted, not yet addressed: the first question after a reveal arrives in 3–10 s in dev (an `after()` hook plus the 5 s poll; realtime delivery should make it faster in production, which hasn't been measured).
 
@@ -108,7 +108,7 @@ Latency: the send-to-delivery path is sender → `submit_message` → `after()` 
 
 - Review console: `/admin` for the `ADMIN_EMAIL` account. Held messages, reports (with the last 20 messages of the conversation), appeals, and policy knobs (`policy_config`).
 - Outage behaviour: messages stay `pending` with exponential backoff (5s→120s), six attempts, then `review`. Senders see an explanation and can cancel.
-- Retention: `purge_retention` (nightly) deletes approved messages 30 days after a live conversation ends, friend-chat messages 30 days after they were sent, resolved pending/blocked rows after 7 days (not while an appeal is open), resolved reports after 365 days.
+- Retention: `purge_retention` (nightly) deletes approved messages 30 days after a live conversation ends, friend-chat messages 30 days after they were sent, finished queue entries after 90 days, metric events after a year (worker heartbeats after 7 days), finished email-outbox rows and reminder-send records after 30 days, resolved pending/blocked rows after 7 days (not while an appeal is open), resolved reports after 365 days.
 - Deletion: `DELETE /api/account` ends live state, then deletes the auth user; everything cascades.
 
 See `DECISIONS.md` for the choices made so far and what is still open.
