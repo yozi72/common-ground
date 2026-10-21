@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabaseBrowser } from "@/lib/supabase/client";
 import { TwoCups } from "@/components/Illustrations";
+import { UNREAD_CHANGED } from "@/components/useUnread";
 
 type Conv = { id: string; status: "opening" | "chatting" | "ended"; opening_question_count: number; questions_asked: number; end_reason: string | null; kind?: "live" | "friend" };
 type Question = { id: string; seq: number; phase: "opening" | "mid"; question_text: string; choices: string[]; status: "open" | "revealed" | "closed"; created_at: string; revealed_at: string | null };
@@ -11,13 +12,18 @@ type Msg = { id: string; sender_participant_id: string; kind: "chat" | "answer";
 type Pending = { id: string; client_send_id: string; kind: "chat" | "answer"; question_id: string | null; body: string; status: string; user_explanation: string | null; suggested_revision: string | null; created_at: string; attempts: number };
 
 const PENDING_CANCEL_AFTER_MS = 45_000;
+const PAGE = 200; // newest messages loaded first; older history on request
 
 export function Conversation({ conversationId, myParticipantId, myAlias, peerAlias, peerBadges = [], kind = "live", connectionId = null, initialMuted = false }: { conversationId: string; myParticipantId: string; myAlias: string; peerAlias: string; peerBadges?: string[]; kind?: "live" | "friend"; connectionId?: string | null; initialMuted?: boolean }) {
   const router = useRouter();
   const [conv, setConv] = useState<Conv | null>(null);
   const [questions, setQuestions] = useState<Question[]>([]);
   const [answers, setAnswers] = useState<Answer[]>([]);
-  const [messages, setMessages] = useState<Msg[]>([]);
+  const [messages, setMessages] = useState<Msg[]>([]);      // newest page, oldest first
+  const [older, setOlder] = useState<Msg[]>([]);            // earlier pages the reader asked for
+  const [historyDone, setHistoryDone] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const lastReadSent = useRef<string | null>(null);
   const [pending, setPending] = useState<Pending[]>([]);
   const [partnerAway, setPartnerAway] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -35,19 +41,43 @@ export function Conversation({ conversationId, myParticipantId, myAlias, peerAli
       sb.from("conversations").select("id, status, opening_question_count, questions_asked, end_reason, kind").eq("id", conversationId).maybeSingle(),
       sb.from("conversation_questions").select("id, seq, phase, question_text, choices, status, created_at, revealed_at").eq("conversation_id", conversationId).order("seq"),
       sb.from("question_answers").select("question_id, participant_id, choice_index, custom_text, status").eq("conversation_id", conversationId),
-      sb.from("approved_messages").select("id, sender_participant_id, kind, body, created_at").eq("conversation_id", conversationId).order("created_at"),
+      sb.from("approved_messages").select("id, sender_participant_id, kind, body, created_at").eq("conversation_id", conversationId).order("created_at", { ascending: false }).limit(PAGE),
       sb.from("pending_messages").select("id, client_send_id, kind, question_id, body, status, user_explanation, suggested_revision, created_at, attempts").eq("conversation_id", conversationId).order("created_at"),
       sb.from("notifications").select("id").eq("kind", "partner_away").contains("payload", { conversation_id: conversationId }).limit(1),
     ]);
     if (c.data) setConv(c.data as Conv);
     setQuestions((q.data ?? []) as Question[]);
     setAnswers((a.data ?? []) as Answer[]);
-    setMessages((m.data ?? []) as Msg[]);
+    const latest = ((m.data ?? []) as Msg[]).slice().reverse();
+    if (!m.error) setMessages(latest);
     setPending((p.data ?? []) as Pending[]);
     setPartnerAway(!!n.data?.length);
     if (c.data?.status === "ended" && c.data?.kind !== "friend") router.push(`/c/${conversationId}/reflect`);
-    if (c.data?.kind === "friend" && c.data?.status !== "ended") fetch(`/api/conversations/${conversationId}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "read" }) }).catch(() => {});
+    // Mark read only what was actually loaded and is on screen: a visible tab, a
+    // successful fetch, and only up to the newest message shown (never on error).
+    const newest = latest[latest.length - 1]?.created_at ?? null;
+    if (c.data?.kind === "friend" && c.data?.status !== "ended" && !m.error && newest && document.visibilityState === "visible" && lastReadSent.current !== newest) {
+      lastReadSent.current = newest;
+      fetch(`/api/conversations/${conversationId}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "read", up_to: newest }) })
+        .then(() => window.dispatchEvent(new Event(UNREAD_CHANGED)))
+        .catch(() => { lastReadSent.current = null; });
+    }
   }, [conversationId, router]);
+
+  // Earlier history, one page at a time, before the oldest message we have.
+  async function loadOlder() {
+    const oldest = (older[0] ?? messages[0])?.created_at;
+    if (!oldest || loadingMore) return;
+    setLoadingMore(true);
+    const { data, error } = await supabaseBrowser().from("approved_messages").select("id, sender_participant_id, kind, body, created_at")
+      .eq("conversation_id", conversationId).lt("created_at", oldest).order("created_at", { ascending: false }).limit(PAGE);
+    setLoadingMore(false);
+    if (error) { setError("Couldn't load earlier messages. Try again."); return; }
+    const page = ((data ?? []) as Msg[]).slice().reverse();
+    setOlder((prev) => [...page, ...prev]);
+    if (page.length < PAGE) setHistoryDone(true);
+  }
+  const canLoadOlder = !historyDone && (older.length > 0 || messages.length >= PAGE);
 
   useEffect(() => { const t = setTimeout(load, 0); return () => clearTimeout(t); }, [load]);
 
@@ -62,10 +92,12 @@ export function Conversation({ conversationId, myParticipantId, myAlias, peerAli
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "notifications" }, load)
       .subscribe();
     const poll = setInterval(load, 5000);
+    const onVisible = () => { if (document.visibilityState === "visible") load(); };
+    document.addEventListener("visibilitychange", onVisible);
     const hb = setInterval(() => { if (!isFriend) fetch(`/api/conversations/${conversationId}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "heartbeat" }) }); }, 30_000);
     const clock = setInterval(() => setNow(Date.now()), 1000);
     const clock0 = setTimeout(() => setNow(Date.now()), 0);
-    return () => { sb.removeChannel(ch); clearInterval(poll); clearInterval(hb); clearInterval(clock); clearTimeout(clock0); };
+    return () => { sb.removeChannel(ch); clearInterval(poll); clearInterval(hb); clearInterval(clock); clearTimeout(clock0); document.removeEventListener("visibilitychange", onVisible); };
   }, [conversationId, load, isFriend]);
 
   // Faster polling while something of mine is still being checked.
@@ -95,13 +127,14 @@ export function Conversation({ conversationId, myParticipantId, myAlias, peerAli
     for (const q of questions.filter((q) => q.status !== "open")) {
       items.push({ key: `q${q.id}`, at: q.revealed_at ?? q.created_at, node: <RevealedQuestion q={q} mine={myAnswerFor(q.id)} theirs={peerAnswerFor(q.id)} myAlias={myAlias} peerAlias={peerAlias} /> });
     }
-    for (const m of messages.filter((m) => m.kind === "chat")) {
+    const seen = new Set(messages.map((m) => m.id));
+    for (const m of [...older.filter((o) => !seen.has(o.id)), ...messages].filter((m) => m.kind === "chat")) {
       const mine = m.sender_participant_id === myParticipantId;
       items.push({ key: m.id, at: m.created_at, node: <Bubble mine={mine} alias={mine ? myAlias : peerAlias} body={m.body} at={m.created_at} /> });
     }
     return items.sort((a, b) => a.at.localeCompare(b.at));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [questions, messages, answers]);
+  }, [questions, messages, older, answers]);
 
   if (!conv) return <p className="muted">Loading…</p>;
 
@@ -171,6 +204,11 @@ export function Conversation({ conversationId, myParticipantId, myAlias, peerAli
       {reporting && <ReportForm onClose={() => setReporting(false)} onSubmit={async (b) => { const r = await api(`/api/conversations/${conversationId}`, { action: "report", ...b }); if (r) { setReporting(false); if (b.also_block) router.push(`/c/${conversationId}/reflect`); } }} />}
 
       <section aria-label="Conversation" className="flex-1 space-y-3 pb-4">
+        {canLoadOlder && (
+          <div className="flex justify-center">
+            <button className="btn btn-ghost text-sm" disabled={loadingMore} onClick={loadOlder}>{loadingMore ? "Loading…" : "Show earlier messages"}</button>
+          </div>
+        )}
         {timeline.length === 0 && (
           <div className="text-center py-6 space-y-2">
             <TwoCups className="w-36 h-auto mx-auto float" />

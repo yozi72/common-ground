@@ -1,6 +1,7 @@
 "use client";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useUnreadTotal } from "./useUnread";
 
 const TABS = [
   { href: "/lobby", label: "Talk", match: (p: string) => p.startsWith("/lobby") || p.startsWith("/c/") },
@@ -36,8 +37,9 @@ function Icon({ name, active }: { name: string; active: boolean }) {
   );
 }
 
-export function TabBar({ isAdmin = false, unread = 0 }: { isAdmin?: boolean; unread?: number }) {
+export function TabBar({ isAdmin = false, unread: initialUnread = 0 }: { isAdmin?: boolean; unread?: number }) {
   const path = usePathname();
+  const unread = useUnreadTotal(initialUnread);
   const tabs = isAdmin ? [...TABS, { href: "/admin", label: "Review", match: (p: string) => p.startsWith("/admin") }] : TABS;
   return (
     <nav aria-label="Sections" className="sm:hidden fixed bottom-0 inset-x-0 z-20" style={{ background: "var(--card)", borderTop: "1px solid var(--line)", paddingBottom: "env(safe-area-inset-bottom)" }}>

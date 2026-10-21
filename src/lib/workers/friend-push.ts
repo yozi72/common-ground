@@ -1,6 +1,7 @@
 // Neutral push for new friend messages. Rows are queued by the database only
 // when the recipient opted in (friend_push_enabled), the thread isn't muted and
-// nothing was pushed for that thread in the last 10 minutes. The text never
+// nothing was pushed for that thread in the last 10 minutes. claim_push_queue
+// re-checks consent, mute, friendship, blocks and unread state at send time. The text never
 // includes content or who it is from.
 import "server-only";
 import webpush from "web-push";
@@ -10,7 +11,7 @@ import { isAllowedPushEndpoint } from "@/lib/push-endpoint";
 
 export async function sendFriendMessagePushes(limit = 20) {
   const admin = supabaseAdmin();
-  const out = { sent: 0, failed: 0, skipped: 0 };
+  const out = { sent: 0, failed: 0, skipped: 0, retried: 0 };
   const { data: rows, error } = await admin.rpc("claim_push_queue", { p_limit: limit });
   if (error) throw new Error(`claim_push_queue: ${error.message}`);
   if (!rows?.length) return out;
@@ -37,7 +38,12 @@ export async function sendFriendMessagePushes(limit = 20) {
       }
     }
     if (delivered > 0) { await admin.from("push_queue").update({ status: "sent", sent_at: new Date().toISOString() }).eq("id", row.id); out.sent++; }
-    else { await admin.from("push_queue").update({ status: subs?.length ? "failed" : "skipped", last_error: lastErr ?? "no device" }).eq("id", row.id); if (subs?.length) out.failed++; else out.skipped++; }
+    else if (!subs?.length) { await admin.from("push_queue").update({ status: "skipped", last_error: "no device" }).eq("id", row.id); out.skipped++; }
+    else {
+      // transient failure: back to the queue with backoff (1, 2, 4 min); 'failed' after the third attempt
+      const { data: status } = await admin.rpc("fail_push_queue", { p_id: row.id, p_error: lastErr ?? "push failed" });
+      if (status === "failed") out.failed++; else out.retried++;
+    }
   }
   return out;
 }

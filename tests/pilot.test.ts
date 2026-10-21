@@ -1068,3 +1068,174 @@ describe("housekeeping and deletion", () => {
     expect(c!.status).toBe("ended");
   });
 });
+
+describe("fourth review regressions (2026-10-20)", () => {
+  async function befriend(tagA: string, tagB: string) {
+    const a = await user(tagA, LEFT);
+    const b = await user(tagB, RIGHT);
+    const conv = await openConversation(a, b);
+    await a.client.rpc("leave_conversation", { p_conversation: conv });
+    await a.client.rpc("set_connection_decision", { p_conversation: conv, p_decision: true });
+    await b.client.rpc("set_connection_decision", { p_conversation: conv, p_decision: true });
+    const { data: conns } = await a.client.rpc("friend_threads_overview");
+    const { data: tid } = await a.client.rpc("open_friend_thread", { p_connection: conns![0].connection_id });
+    return { a, b, conv, connectionId: conns![0].connection_id as string, tid: tid as string };
+  }
+
+  it("blocking closes the open question; the blocked person can neither answer it nor see the hidden answer", async () => {
+    const a = await user("bq-a", LEFT);
+    const b = await user("bq-b", RIGHT);
+    const conv = await openConversation(a, b);
+    const qid = await generateNextQuestion(conv, "opening");
+    await a.client.rpc("answer_with_choice", { p_question: qid, p_choice: 2 });
+    await a.client.rpc("block_peer", { p_conversation: conv });
+    const { data: q } = await admin().from("conversation_questions").select("status, revealed_at").eq("id", qid).single();
+    expect(q).toEqual({ status: "closed", revealed_at: null });
+    const r = await b.client.rpc("answer_with_choice", { p_question: qid, p_choice: 0 });
+    expect(r.error?.code).toBe("P0001");
+    const s = await b.client.rpc("skip_question", { p_question: qid });
+    expect(s.error?.code).toBe("P0001");
+    const { data: seen } = await b.client.from("question_answers").select("*").eq("question_id", qid);
+    expect(seen).toEqual([]);
+    const { data: q2 } = await admin().from("conversation_questions").select("status, revealed_at").eq("id", qid).single();
+    expect(q2!.revealed_at).toBeNull();
+  });
+
+  it("leaving closes the open question too, and a custom answer approved afterwards never reveals", async () => {
+    const a = await user("lq-a", LEFT);
+    const b = await user("lq-b", RIGHT);
+    const conv = await openConversation(a, b);
+    const qid = await generateNextQuestion(conv, "opening");
+    await a.client.rpc("answer_with_choice", { p_question: qid, p_choice: 1 });
+    const { data: pid } = await b.client.rpc("submit_message", { p_conversation: conv, p_client_send_id: "lq-1", p_body: "my own answer", p_kind: "answer", p_question: qid });
+    await a.client.rpc("leave_conversation", { p_conversation: conv });
+    await processPendingBatch();
+    const { data: p } = await admin().from("pending_messages").select("status").eq("id", pid).single();
+    expect(p!.status).toBe("cancelled");
+    const { data: q } = await admin().from("conversation_questions").select("status, revealed_at").eq("id", qid).single();
+    expect(q).toEqual({ status: "closed", revealed_at: null });
+    const { data: seen } = await b.client.from("question_answers").select("participant_id").eq("question_id", qid);
+    expect(seen!.length).toBe(1); // only b's own row
+  });
+
+  it("a removed friendship needs a fresh yes from both before it comes back; then the thread returns", async () => {
+    const { a, b, conv, connectionId, tid } = await befriend("rf-a", "rf-b");
+    await a.client.rpc("remove_friend", { p_connection: connectionId });
+    let { data: cn } = await admin().from("connections").select("status").eq("id", connectionId).single();
+    expect(cn!.status).toBe("ended");
+    // old decisions are revoked: neither person sees one any more
+    const { data: mineB } = await b.client.from("connection_requests").select("decision").eq("conversation_id", conv);
+    expect(mineB).toEqual([]);
+    // one person alone cannot restore it
+    const { data: r1 } = await a.client.rpc("set_connection_decision", { p_conversation: conv, p_decision: true });
+    expect(r1.status).toBe("recorded");
+    ({ data: cn } = await admin().from("connections").select("status").eq("id", connectionId).single());
+    expect(cn!.status).toBe("ended");
+    let { data: th } = await admin().from("conversations").select("status").eq("id", tid).single();
+    expect(th!.status).toBe("ended");
+    const open = await a.client.rpc("open_friend_thread", { p_connection: connectionId });
+    expect(open.data).toBe(tid); // history only; sending is refused
+    const send = await a.client.rpc("submit_message", { p_conversation: tid, p_client_send_id: "rf-x", p_body: "still there?" });
+    expect(send.error?.code).toBe("P0001");
+    // the other person's fresh yes restores the friendship and its thread
+    const { data: r2 } = await b.client.rpc("set_connection_decision", { p_conversation: conv, p_decision: true });
+    expect(r2.status).toBe("connected");
+    ({ data: cn } = await admin().from("connections").select("status").eq("id", connectionId).single());
+    expect(cn!.status).toBe("active");
+    ({ data: th } = await admin().from("conversations").select("status, end_reason").eq("id", tid).single());
+    expect(th).toEqual({ status: "chatting", end_reason: null });
+    const ok = await a.client.rpc("submit_message", { p_conversation: tid, p_client_send_id: "rf-y", p_body: "welcome back" });
+    expect(ok.error).toBeNull();
+  });
+
+  it("a block revokes consent as well; the thread stays ended even if both say yes", async () => {
+    const { a, b, conv, connectionId, tid } = await befriend("rb-a", "rb-b");
+    await a.client.rpc("block_peer", { p_conversation: tid });
+    const { data: r } = await b.client.rpc("set_connection_decision", { p_conversation: conv, p_decision: true });
+    expect(r.status).toBe("recorded");
+    const { data: cn } = await admin().from("connections").select("status").eq("id", connectionId).single();
+    expect(cn!.status).toBe("ended");
+  });
+
+  it("queued friend alerts are dropped by later mute, read, opt-out, removal; failures retry then give up", async () => {
+    const { a, b, connectionId, tid } = await befriend("pq-a", "pq-b");
+    await b.client.from("reminder_prefs").upsert({ account_id: b.id, friend_push_enabled: true });
+    const resetGuard = () => admin().from("thread_reads").update({ last_push_at: null }).eq("conversation_id", tid).eq("account_id", b.id);
+    const queued = async () => (await admin().from("push_queue").select("id, status, last_error, attempts, next_attempt_at").eq("account_id", b.id).order("created_at")).data!;
+    const sendAndQueue = async (id: string) => { await resetGuard(); await a.client.rpc("submit_message", { p_conversation: tid, p_client_send_id: id, p_body: "hello " + id }); await processPendingBatch(); };
+
+    await sendAndQueue("pq-1");
+    expect((await queued()).map((r) => r.status)).toEqual(["queued"]);
+    await b.client.rpc("set_thread_muted", { p_conversation: tid, p_muted: true });
+    expect((await queued()).map((r) => [r.status, r.last_error])).toEqual([["cancelled", "muted"]]);
+    await b.client.rpc("set_thread_muted", { p_conversation: tid, p_muted: false });
+
+    await sendAndQueue("pq-2");
+    expect((await queued())[1].status).toBe("queued");
+    await b.client.rpc("mark_thread_read", { p_conversation: tid });
+    expect((await queued())[1]).toMatchObject({ status: "cancelled", last_error: "read" });
+
+    // re-check at claim time: opted out after queueing → skipped, never sent
+    await sendAndQueue("pq-3");
+    await b.client.from("reminder_prefs").update({ friend_push_enabled: false }).eq("account_id", b.id);
+    let { data: claimed } = await admin().rpc("claim_push_queue", { p_limit: 10 });
+    expect(claimed).toEqual([]);
+    expect((await queued())[2]).toMatchObject({ status: "skipped", last_error: "opted out" });
+    await b.client.from("reminder_prefs").update({ friend_push_enabled: true }).eq("account_id", b.id);
+
+    // a warranted alert is claimed; a transient failure goes back to the queue with backoff, then fails for good
+    await sendAndQueue("pq-4");
+    ({ data: claimed } = await admin().rpc("claim_push_queue", { p_limit: 10 }));
+    expect(claimed!.length).toBe(1);
+    const id = claimed![0].id as string;
+    let { data: st } = await admin().rpc("fail_push_queue", { p_id: id, p_error: "push 502" });
+    expect(st).toBe("queued");
+    const row = (await queued()).find((r) => r.id === id)!;
+    expect(row.attempts).toBe(1);
+    expect(new Date(row.next_attempt_at).getTime()).toBeGreaterThan(Date.now() + 30_000);
+    ({ data: claimed } = await admin().rpc("claim_push_queue", { p_limit: 10 }));
+    expect(claimed).toEqual([]); // not due yet
+    await admin().from("push_queue").update({ next_attempt_at: new Date().toISOString() }).eq("id", id);
+    ({ data: claimed } = await admin().rpc("claim_push_queue", { p_limit: 10 }));
+    expect(claimed!.map((r: { id: string }) => r.id)).toEqual([id]);
+    await admin().rpc("fail_push_queue", { p_id: id, p_error: "push 502" });
+    ({ data: st } = await admin().rpc("fail_push_queue", { p_id: id, p_error: "push 502" }));
+    expect(st).toBe("failed");
+    // a stale claim (worker died) is reclaimed after 10 minutes
+    await sendAndQueue("pq-5");
+    ({ data: claimed } = await admin().rpc("claim_push_queue", { p_limit: 10 }));
+    const stale = claimed![0].id as string;
+    ({ data: claimed } = await admin().rpc("claim_push_queue", { p_limit: 10 }));
+    expect(claimed).toEqual([]);
+    await admin().from("push_queue").update({ claimed_at: new Date(Date.now() - 11 * 60_000).toISOString() }).eq("id", stale);
+    ({ data: claimed } = await admin().rpc("claim_push_queue", { p_limit: 10 }));
+    expect(claimed!.map((r: { id: string }) => r.id)).toEqual([stale]);
+    // removal cancels whatever is still pending
+    await admin().from("push_queue").update({ status: "queued", next_attempt_at: new Date().toISOString() }).eq("id", stale);
+    await a.client.rpc("remove_friend", { p_connection: connectionId });
+    expect((await queued()).find((r) => r.id === stale)).toMatchObject({ status: "cancelled", last_error: "friendship ended" });
+  });
+
+  it("the read marker only advances to what was loaded, and never backwards", async () => {
+    const { a, b, tid } = await befriend("rm-a", "rm-b");
+    await a.client.rpc("submit_message", { p_conversation: tid, p_client_send_id: "rm-1", p_body: "first" });
+    await processPendingBatch();
+    await a.client.rpc("submit_message", { p_conversation: tid, p_client_send_id: "rm-2", p_body: "second" });
+    await processPendingBatch();
+    const { data: ms } = await admin().from("approved_messages").select("created_at").eq("conversation_id", tid).order("created_at");
+    expect(ms!.length).toBe(2);
+    const unread = async () => (await b.client.rpc("friend_unread_total")).data as number;
+    expect(await unread()).toBe(2);
+    await b.client.rpc("mark_thread_read", { p_conversation: tid, p_up_to: ms![0].created_at });
+    expect(await unread()).toBe(1);
+    await b.client.rpc("mark_thread_read", { p_conversation: tid, p_up_to: new Date(Date.now() - 86400_000).toISOString() });
+    expect(await unread()).toBe(1); // never backwards
+    await b.client.rpc("mark_thread_read", { p_conversation: tid, p_up_to: ms![1].created_at });
+    expect(await unread()).toBe(0);
+    // a bound in the future can't mark messages that don't exist yet as read
+    await b.client.rpc("mark_thread_read", { p_conversation: tid, p_up_to: new Date(Date.now() + 3600_000).toISOString() });
+    await a.client.rpc("submit_message", { p_conversation: tid, p_client_send_id: "rm-3", p_body: "third" });
+    await processPendingBatch();
+    expect(await unread()).toBe(1);
+  });
+});

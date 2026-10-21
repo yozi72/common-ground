@@ -16,7 +16,7 @@ const Body = z.discriminatedUnion("action", [
     also_block: z.boolean().default(false),
   }),
   z.object({ action: z.literal("connection_decision"), decision: z.boolean() }),
-  z.object({ action: z.literal("read") }),
+  z.object({ action: z.literal("read"), up_to: z.string().datetime({ offset: true }).optional() }),
   z.object({ action: z.literal("mute"), muted: z.boolean() }),
   z.object({ action: z.literal("question") }),
   z.object({ action: z.literal("remove_friend"), connection_id: z.string().uuid() }),
@@ -65,7 +65,8 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
         return ok(data);
       }
       case "read": {
-        const { error } = await supabase.rpc("mark_thread_read", { p_conversation: id });
+        // bounded to the newest message the client actually displayed; never moves backwards
+        const { error } = await supabase.rpc("mark_thread_read", { p_conversation: id, p_up_to: b.up_to ?? null });
         if (error) throw fromRpcError(error);
         return ok();
       }

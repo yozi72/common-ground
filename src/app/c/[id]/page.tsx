@@ -29,7 +29,6 @@ export default async function ConversationPage({ params }: { params: Promise<{ i
   if (conv.kind === "friend") {
     const { data: tr } = await supabase.from("thread_reads").select("muted").eq("conversation_id", id).eq("account_id", auth.user.id).maybeSingle();
     muted = !!tr?.muted;
-    await supabase.rpc("mark_thread_read", { p_conversation: id });
   }
 
   return <Conversation conversationId={id} myParticipantId={me.id} myAlias={myAlias} peerAlias={peerAlias} peerBadges={peerBadges} kind={conv.kind} connectionId={conv.connection_id} initialMuted={muted} />;

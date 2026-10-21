@@ -27,7 +27,7 @@ Short status for anyone reviewing this codebase (including an AI reviewer). Upda
 - Leave / block / report; partner-away notice (≤2 min); abandonment; reflection; mutual-consent "Friends" with one persistent chat per friendship under the same aliases (see "Friend chats" below); account + data deletion; retention purge.
 - Profile stats (people talked with, conversations, mutual friends) and 13 participation badges; the other participant sees only coarse tiers (`peer_badges`), never exact counts.
 - Admin review console at `/admin` for the `ADMIN_EMAIL` account (held messages, reports, appeals, policy knobs).
-- 84 tests across 9 files (integration against a local Supabase + unit) (`npm test`), lint, typecheck, production build.
+- 90 tests across 9 files (integration against a local Supabase + unit) (`npm test`), lint, typecheck, production build.
 
 ## Unfinished, mocked, or known issues
 
@@ -113,6 +113,20 @@ All nine findings were confirmed and fixed in `2c165c7` (migration `0004_review_
 | 7 | Success metric counted one participant | `conversation_opened` logged for both participants | pilot “metric is recorded for both participants” |
 | — | Sign-in page wording | mentions optional session reminders | — |
 
+## Fourth review (25affa1 / 0687936) — status
+
+| # | Finding | Fix | Test |
+|---|---|---|---|
+| 1 (High) | After a block, the blocked person could still finish the open question and reveal the other person's private answer | `end_conversation` (used by leave, block, abandonment) and `remove_friend` close open questions; `answer_with_choice` / `skip_question` go through `assert_can_answer` (open question, conversation not ended, caller still present, no block either way); `maybe_reveal_question` refuses and closes the question when the conversation ended, someone left, or a block exists, so an answer approved later never reveals. Migration 0010 closed questions left open in ended conversations. | pilot "blocking closes the open question…", "leaving closes the open question too…" |
+| 2 | One person could re-activate a removed friendship because the other person's old "yes" still counted | `connection_requests.revoked_at`: removal and block revoke both people's decisions on every conversation between them (and hide them from the reflect page); only unrevoked decisions count, so both must say yes again. A restored friendship gets its thread back (history intact); a thread ended by a block stays ended. | pilot "a removed friendship needs a fresh yes from both…", "a block revokes consent as well…" |
+| 3 | The chat marked messages read during background polling, even in a hidden tab or after a failed fetch; nav badges never updated | The client marks read only after a successful load, only while the tab is visible, and only up to the newest message it displayed (`mark_thread_read(p_conversation, p_up_to)`, never backwards, never into the future). The server page no longer marks read on navigation. Friends badges (desktop link and phone tab) are live: realtime notification inserts, a `cg:unread-changed` event from the chat, focus/visibility, and a 30 s fallback. | pilot "the read marker only advances to what was loaded, and never backwards" |
+| 4 | Queued friend alerts ignored later mute / removal / block / read; the worker only checked the general preference | Mute, read-to-end, removal, block and conversation end cancel queued rows; `claim_push_queue` re-checks conversation state, friendship, blocks, consent, mute and unread state at send time and marks obsolete rows skipped with the reason. | pilot "queued friend alerts are dropped by later mute, read, opt-out, removal…" |
+| 5 | Long friend chats had no pagination (oldest-first, 1,000-row cap) | The chat loads the newest 200 messages first and offers "Show earlier messages" (200 per page); the read marker is bounded to the newest loaded message. | — (manual) |
+| 6 | Friend-push failures had no retry path | `fail_push_queue`: back to the queue with backoff (1, 2, 4 min), `failed` after three attempts; claims older than 10 minutes are reclaimed. | same pilot test as 4 |
+| 7 | Privacy page said all delivered messages are deleted 30 days after a conversation ends | Distinguishes session messages (30 days after the conversation ends) from friend messages (30 days after sending). | — |
+
+**Limitation kept on purpose:** the read marker is a single timestamp per person and thread. Seeing the newest page marks everything older as read, including older unread messages the reader has not paged back to. Per-message read receipts would be needed to do better; not planned for the pilot.
+
 ## Friend chats, queue repair, reminder edge cases (2026-10-20)
 
 **Friends are persistent chats, not reconnection invitations.** Each friendship (`connections`) has at most one conversation with `kind = 'friend'` (partial unique index `one_friend_thread_per_connection`; `open_friend_thread` is idempotent and safe under concurrent taps). Aliases from the original conversation are kept. Either person can write at any time, including outside session hours and while the other is offline; messages go through the same pre-delivery moderation and appear when the other person next opens the chat. Friends shows an unread count per thread and the Friends tab shows the total. "Give us a question" asks the model for one question on demand (rate-limited 10/hour per person). There are no inactivity rules; a thread ends only when someone removes the friend or blocks the other person.
@@ -146,6 +160,8 @@ All nine findings were confirmed and fixed in `2c165c7` (migration `0004_review_
 - Scheduler: `worker_config` rows `tick_url` and `cron_secret` on the hosted database (set via service role); the cron job `common-ground-tick` is created by migration 0005.
 
 ## Change log
+
+- 2026-10-20 — Fourth review fixes: questions close with the conversation (block/leave can no longer reveal a hidden answer), revocable friendship consent, read marks only for loaded + visible messages with live badges, push-queue re-check/cancel/retry, chat pagination, privacy wording. Migration 0010. 90 tests.
 
 - 2026-10-20 — Friends as persistent chats (one thread per friendship, offline delivery, unread counts, on-demand question, mute/remove/block, separate neutral push consent with flood guard, 30-day per-message retention), live-only scoping of the one-active-conversation rule and metrics, stranded-queue repair and acceptance lock ordering, server-side "next session" reminder target, strict calendar day parsing, profile load error handling. Migrations 0008, 0009. 84 tests.
 
