@@ -15,6 +15,7 @@ Pilot is live at https://common-ground-dusky-nine.vercel.app (commit d2f5eb9). W
 - **Admins skip onboarding and land on Review;** they can opt in to participate.
 
 ## Done
+- 2026-10-20 (later): Reminder setup rework — `src/components/ReminderControls.tsx` (draft + explicit Save; email default ON for first-time, opt-out persisted; Apple/Google buttons + "Other calendars (.ics)"; iOS-only pre-preview help panel with `localStorage` key `cg-ios-calendar-help-seen` and "Need help adding it?"; no false "added" messages), `src/lib/unsubscribe.ts` + `src/app/api/reminders/unsubscribe/route.ts` (HMAC one-click unsubscribe, public path in `proxy.ts`), unsubscribe link in `src/lib/workers/reminders.ts`, `isIOSDevice()` in `src/lib/push-client.ts`. Why: user tapped the iOS checkmark instead of "Add To Calendar"; reviewer asked for default-on email and clearer activation.
 - Full pilot: schema (migrations 0001–0006), moderation pipeline, matching, chat, reflection, friends, admin console, deletion, retention.
 - External review fixes (membership lock-down, two-party acceptance, answer reveal at DB level, retention of custom answers, NULL-safe ownership, single open question, safe redirects, SMTP notices, Friends refresh).
 - Design passes 1–2 (warm light theme, tab bar, illustrations), stats/badges.

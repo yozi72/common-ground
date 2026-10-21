@@ -10,6 +10,7 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { env } from "@/lib/env";
 import { getScheduleConfig } from "@/lib/schedule-config";
 import { sessionDueForReminder, formatSessionTime, partsWeekday } from "@/lib/schedule";
+import { unsubscribeToken } from "@/lib/unsubscribe";
 
 const MAX_ATTEMPTS = 3;
 
@@ -76,7 +77,8 @@ export async function sendDueReminders(nowMs = Date.now()) {
           const to = user?.user?.email;
           if (!to) throw new Error("no email");
           const t = formatSessionTime(session, cfg.timezone, cfg.timezone);
-          await sendEmail(to, "Common Ground: the conversation hour starts soon", `Tonight's session starts in ${lead} minutes (${t.range} ${t.tzName}).\n\nJoin at the start for the best chance of a match: ${env.siteUrl()}/lobby\n\nTo stop these reminders, open Profile → Reminders.`);
+          const unsub = `${env.siteUrl()}/api/reminders/unsubscribe?t=${unsubscribeToken(p.account_id)}`;
+          await sendEmail(to, "Common Ground: the conversation hour starts soon", `Today's session starts in ${lead} minutes (${t.range} ${t.tzName}).\n\nJoin at the start for the best chance of a match: ${env.siteUrl()}/lobby\n\nStop these emails (one click): ${unsub}\nOr manage reminders under Profile → Reminders.`);
           await finish(admin, claim.id, "sent", null);
           out.email.sent++;
         } catch (e) {

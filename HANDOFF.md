@@ -100,6 +100,15 @@ All nine findings were confirmed and fixed in `2c165c7` (migration `0004_review_
 
 **Measurement limitations:** ordinal answers treated as equally spaced; equal weights; a single mean hides which issues differ; eight questions are a narrow slice of political views; “not sure” and “declined” are indistinguishable from each other in matching (both excluded). Treat the score as a pairing heuristic only.
 
+## Reminder setup (2026-10-20 update)
+
+- **Email reminders:** “Email me 10 minutes before the session.” is ON by default in first-time setup and is only activated by **Save reminder preferences** (visiting the page changes nothing). A saved opt-out is never re-enabled. Follows the chosen frequency (next session / selected days / every session). If the server has no email sender, the option shows “Email reminders aren't available on this server yet” instead of an enabled state. Every reminder email carries a signed one-click unsubscribe link (`/api/reminders/unsubscribe?t=…`, HMAC-bound to the account; sets `email_enabled=false` and logs a consent event).
+- **Phone notifications:** enabling registers the device immediately (permission prompt only on tap), then Save turns the preference on. “Remove this device” unsubscribes it.
+- **Confirmations:** “Email reminders saved for every session, 10 minutes before.” / “Email and phone reminders saved …” / “Email and phone reminders are off.” Nothing ever says “Added to calendar”: opening or downloading the file doesn't confirm an import.
+- **Calendar:** two prominent buttons, **Add to Apple Calendar** and **Add to Google Calendar**, plus a small **Other calendars (.ics)** link (same file; works with Outlook and others). Calendar export is separate from app preferences and uses the chosen frequency, the schedule timezone (TZID recurrence) and a 10-minute alarm.
+- **iPhone guidance:** on iOS only, the first Apple Calendar export shows a panel (“On the next screen, tap Add To Calendar at the bottom. The blue checkmark closes the preview without adding the event.”) with a visual, **Open calendar preview** and **Cancel**; available again via **Need help adding it?**. Verified against the observed iOS 26 Safari flow from the user's screenshots; the native preview itself is iOS-owned and not styled.
+- **Real-device status:** calendar export verified on an iPhone (event preview correct). Push on a physical phone and the new guidance panel are **not yet verified on device**.
+
 ## Session schedule & reminders — configuration
 
 - Change the schedule in Review → Policy (`session_days` as `[0..6]`, `session_start_time` `"HH:MM"`, `session_duration_minutes`, `session_timezone` IANA). All surfaces read the same values; downloaded calendar events do **not** update themselves.
@@ -108,6 +117,8 @@ All nine findings were confirmed and fixed in `2c165c7` (migration `0004_review_
 - Scheduler: `worker_config` rows `tick_url` and `cron_secret` on the hosted database (set via service role); the cron job `common-ground-tick` is created by migration 0005.
 
 ## Change log
+
+- 2026-10-20 — Reminder setup: email default-on with explicit save and persisted opt-out, one-click unsubscribe in emails, Apple/Google buttons + Other calendars link, iPhone pre-preview guidance, honest confirmations. 70 tests.
 
 - 2026-10-20 — Questionnaire v2 (8 policy questions, explicit non-answers, issue priorities), normalized per-issue scoring with a 5-answer minimum overlap, new thresholds, fresh start of questionnaire data; AI inputs unchanged and now test-pinned. 69 tests.
 

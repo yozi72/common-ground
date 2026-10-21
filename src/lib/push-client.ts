@@ -4,6 +4,12 @@
 
 export type PushSupport = { supported: boolean; needsInstall: boolean; reason?: string };
 
+export function isIOSDevice(): boolean {
+  if (typeof window === "undefined") return false;
+  const ua = navigator.userAgent;
+  return /iPhone|iPad|iPod/.test(ua) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+}
+
 export function pushSupport(): PushSupport {
   if (typeof window === "undefined") return { supported: false, needsInstall: false };
   const ua = navigator.userAgent;
