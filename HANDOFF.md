@@ -9,9 +9,9 @@ Short status for anyone reviewing this codebase (including an AI reviewer). Upda
 
 ## What works (verified)
 
-- **Daily shared session** (default 6–7 pm America/Los_Angeles, every day; `policy_config`: `session_days`, `session_start_time`, `session_duration_minutes`, `session_timezone`). One implementation (`src/lib/schedule.ts`, SQL `session_window()`) drives server eligibility, lobby countdowns, calendar export and reminders. Backend enforcement: `join_queue`, `run_matching`, `request_reconnection` refuse outside the window; queue entries close at session end; invitations created before closing keep their 60-second deadline; existing conversations continue.
+- **Daily shared session** (default 6–7 pm America/Los_Angeles, every day; `policy_config`: `session_days`, `session_start_time`, `session_duration_minutes`, `session_timezone`). One implementation (`src/lib/schedule.ts`, SQL `session_window()`) drives server eligibility, lobby countdowns, calendar export and reminders. Backend enforcement: `join_queue` and `run_matching` refuse outside the window; queue entries close at session end; invitations created before closing keep their 60-second deadline; existing conversations continue. Friend chats (below) are not session-gated.
 - **Readiness-based matching:** lobby heartbeats (5 s) with server-side expiry (45 s grace → auto-resume), nonresponders paused until "I'm ready", responsive person requeued with original priority and an avoid list, oldest-first partner choice, blocks and eligibility revalidated at acceptance, matching atomic under an advisory lock.
-- **Consented broadening:** after 60 s "allow a smaller difference" (threshold 0.5 instead of 1.0), after 120 s "anyone available" (0). Stored server-side per queue entry, reversible, stricter of the two preferences wins.
+- **Consented broadening:** after 60 s "allow a smaller difference" (threshold 0.20 instead of 0.40), after 120 s "anyone available" (0). Stored server-side per queue entry, reversible, stricter of the two preferences wins.
 - **Automatic local time:** device IANA timezone (no location access) with a manual override in Profile; server-synchronised countdowns refreshed on focus; "Pacific time" fallback label when detection fails.
 - **Reminders:** Web Push (VAPID, service worker, PWA manifest, iOS Add-to-Home-Screen guidance), optional email, Apple/Google calendar export (TZID recurrence, 10-minute alarm, stable UID). Sends are idempotent per (account, session, channel, device), retried up to 3 times inside the 5-minute window, never after the session starts; 404/410 subscriptions are disabled; endpoints move with the account on shared devices; deletion cascades.
 - **Scheduler:** Supabase `pg_cron` + `pg_net` call `/api/cron/tick` every minute (URL/secret in `worker_config`); each run logs a `worker_tick` metric event. No paid plan needed.
@@ -19,21 +19,21 @@ Short status for anyone reviewing this codebase (including an AI reviewer). Upda
 
 - Email magic-link sign-in (Supabase Auth, custom SMTP via Gmail for the pilot).
 - Onboarding: adult attestation, consent, coarse profile, 8-item policy questionnaire v2 (one question per screen, explicit labelled options, nothing preselected, separate “Not sure” / “Prefer not to answer” / skip), optional top-two issue priorities.
-- Waiting list → block-aware matching on questionnaire difference → two-party invitation with 3-minute expiry → conversation.
+- Waiting list → block-aware matching on questionnaire difference → two-party invitation with a 60-second acceptance window → conversation.
 - Opening round of 10 shared questions with 3 generated choices + custom answer; answers hidden until both respond; skip.
 - Open chat with mid-conversation questions on an activity-based backoff.
 - Pre-delivery moderation: every message is `pending` until approved; states `approved / revise / blocked / review`; suggested rewordings only sent if the sender accepts; appeals; sender can cancel while waiting; outages fail closed (retry → human review).
 - Real model (Claude, `claude-opus-5-5`) for moderation and question generation when `AI_PROVIDER=anthropic`; deterministic contact/identity detectors always run. Probe results: `npm run probe` (19/20 agreement on a borderline set; 1.5–6 s per call).
-- Leave / block / report; partner-away notice (≤2 min); abandonment; reflection; mutual-consent "Friends" with reconnection under the same aliases; account + data deletion; retention purge.
+- Leave / block / report; partner-away notice (≤2 min); abandonment; reflection; mutual-consent "Friends" with one persistent chat per friendship under the same aliases (see "Friend chats" below); account + data deletion; retention purge.
 - Profile stats (people talked with, conversations, mutual friends) and 13 participation badges; the other participant sees only coarse tiers (`peer_badges`), never exact counts.
 - Admin review console at `/admin` for the `ADMIN_EMAIL` account (held messages, reports, appeals, policy knobs).
-- 39 tests (35 integration against a local Supabase + 4 unit)  (`npm test`), lint, typecheck, production build.
+- 84 tests across 9 files (integration against a local Supabase + unit) (`npm test`), lint, typecheck, production build.
 
 ## Unfinished, mocked, or known issues
 
-- **Email sender:** Gmail SMTP (app password) for sign-in links and now also for match-ready / reconnect notices (nodemailer; a test notice was delivered 2026-10-20). Capped ~500/day, "from" is a personal address. The lobby only offers the email option when a sender is configured. A sending domain + Resend is the planned replacement.
+- **Email sender:** Gmail SMTP (app password) for sign-in links and match-ready notices (nodemailer; a test notice was delivered 2026-10-20). Capped ~500/day, "from" is a personal address. The lobby only offers the email option when a sender is configured. A sending domain + Resend is the planned replacement.
 - **Worker scheduling:** `pg_cron` in the hosted database calls the worker every minute (verified: `worker_tick` events with `source: pg_cron`). Vercel's daily cron still runs the retention purge. If the database scheduler ever stops, housekeeping still runs opportunistically from user activity.
-- **Push on real devices:** implemented and exercised in automated tests with fake endpoints; **not yet verified on a physical iPhone/Android** (needs a real device: Profile → Reminders → Enable phone notifications; on iPhone, Add to Home Screen first). Lock-screen text is neutral and fixed.
+- **Push on real devices:** implemented and exercised in automated tests with fake endpoints; **not yet verified on a physical iPhone/Android** (needs a real device: Profile → Reminders → Enable phone notifications; on iPhone, Add to Home Screen first). This includes the new friend-message push. Lock-screen text is neutral and fixed.
 - **Contact sharing:** disabled by policy; no code path.
 - **Realtime in production:** lobby and conversation screens poll (10 s / 5 s) and also subscribe to Supabase Realtime; the subscription has not been separately verified on the hosted project (polling covers it). Background/hidden tabs are throttled by browsers, so a tab left in the background may update slowly until it is focused.
 - **Question-after-reveal latency:** 3–10 s in dev (server `after()` hook + 5 s polling fallback); realtime should be faster in production but hasn't been measured there.
@@ -50,12 +50,12 @@ Never in the repo. `.env.local` (git-ignored) holds local keys; production value
 
 Prerequisite: two email addresses you can read. Use two browsers or one normal + one private window (sessions are cookie-based).
 
-1. Both: open the preview URL → Sign in → click the emailed link → complete onboarding. **Make the two questionnaires differ**: one person slides mostly toward the left statements, the other mostly toward the right (at least 3 answered each). Similar answers never match.
+1. Both: open the preview URL → Sign in → click the emailed link → complete onboarding. **Make the two questionnaires differ**: pick opposite options on at least 5 of the 8 questions (fewer than 5 shared answers counts as "not enough information"). Similar answers never match.
 2. Both: Talk → "Join the waiting list". Within ~10 s both see "We found someone" → both Accept.
 3. Question 1 appears for both. Answer on one side only: the other side still sees the question, not the answer. Answer on the second side: both answers appear together, then question 2 arrives (a few seconds).
 4. Try a custom answer containing a phone number: the sender sees "Not delivered… phone number" with a rewording; the recipient sees nothing. "Send this version" delivers the redacted text.
 5. Finish all 10 questions → chat opens. Send a message: "Checking before delivery…" then it appears on both sides. Send "you people are vermin and I will find you": blocked with an explanation; recipient sees nothing.
-6. Options → Leave conversation → both land on the reflection page. Both answer "Yes, I'd talk again" → both see "You both said yes" and the other person under Friends → "Invite to talk again" → the other accepts from Talk → new conversation with the same aliases.
+6. Options → Leave conversation → both land on the reflection page. Both answer "Yes, I'd talk again" → both see "You both said yes" and the other person under Friends → "Message" opens the friendship's chat (same aliases) at any time, no acceptance needed; a message sent while the other is offline shows as unread when they come back.
 7. As the admin: `/admin` shows held messages, reports and appeals.
 
 Local alternative without a second person: `node scripts/qa-partner.mjs` (with `.env.local` exported) plays the other side against a local Supabase. It is a test harness only, never a product feature.
@@ -74,7 +74,7 @@ All nine findings were confirmed and fixed in `2c165c7` (migration `0004_review_
 | 6 | Two open questions possible under overlapping workers | `insert_question` locks the conversation and rechecks; partial unique index on `(conversation_id) where status='open'`; existing duplicates closed | rv6 |
 | 7 | Unvalidated `next` redirect in the auth callback | `src/lib/safe-next.ts`: resolves against the site origin and rejects anything whose resolved origin differs, including normalization tricks like `/a/..//example.org` | `tests/safe-next.test.ts` |
 | 8 | "Email me" promised but no sender | notices send via SMTP (or Resend); option hidden when no sender; delivery tested | — (manual) |
-| 9 | Friends list copied props into state | rendered from server props only; after inviting, `router.refresh()` in a transition; `my_connections` reports a pending invitation only while valid, so expired/declined ones clear | pilot test "reconnect invitation state follows the server" |
+| 9 | Friends list copied props into state | rendered from server props only, refreshed in a transition after an action. (Reconnection invitations were later replaced by persistent friend chats; see "Friend chats" below.) | pilot friend-thread tests |
 
 **Live two-user test on the deployed app (2026-10-20, after `2c165c7`):** user A in a browser, user B via `scripts/qa-partner.mjs` against the hosted project. Observed: match formed; B accepted first and the conversation did *not* open until A accepted (fix 2); AI-generated question 1; A's custom answer with a phone number was held by the real model with an explanation and a rewording; accepting it delivered the reworded text and revealed both answers; question 2 generated; leave → reflection; both said yes → "You both said yes" and the partner listed under Friends. Test accounts were deleted afterwards.
 
@@ -105,13 +105,29 @@ All nine findings were confirmed and fixed in `2c165c7` (migration `0004_review_
 | # | Finding | Fix | Test |
 |---|---|---|---|
 | 1 (High) | Push endpoints accepted any URL (SSRF via the worker) | Allowlist of known push services over https (`src/lib/push-endpoint.ts`) enforced in the API, in `upsert_push_subscription` (migration 0007) and again right before sending; non-conforming stored rows disabled | `tests/push-endpoint.test.ts`, pilot “rejects push endpoints…” |
-| 2 (High) | A friend's invitation could open a second simultaneous conversation | `has_active_conversation()` checked for both people at acceptance and inside `open_conversation_for_invitation` under per-account advisory locks; Friends senders must be free; other pending invitations for the two are declined when one opens | pilot “cannot be put into a second one”, “simultaneous acceptances … only one” |
+| 2 (High) | A friend's invitation could open a second simultaneous conversation | `has_active_conversation()` (live conversations only) checked for both people at acceptance and inside `open_conversation_for_invitation` under per-account advisory locks; other pending invitations for the two are declined when one opens. Friend invitations no longer exist (friend chats are persistent threads, see below) | pilot “cannot be put into a second one”, “simultaneous acceptances … only one” |
 | 3 | Selected-day calendar started on the wrong day; empty selection produced an event | First occurrence is the next selected session day (`firstSession`); no selection → 400 from `/api/calendar`, buttons disabled in the UI | calendar test “start on the next selected day…” |
 | 4 | “Next session only” reminders couldn't be renewed | Expired state shown with “Save for the next session” enabled (`src/lib/reminder-state.ts`) | `tests/reminder-state.test.ts` |
 | 5 | Edit profile started blank | Onboarding prefills saved profile, answers, non-answers, priorities and attestation | — (manual) |
 | 6 | Push stayed attached to the previous account on a shared browser | “This device is set up” only when the browser subscription is registered to the current account; Sign out detaches the device subscription first (`SignOutButton`) | pilot “endpoint belongs to one account” (+ manual) |
 | 7 | Success metric counted one participant | `conversation_opened` logged for both participants | pilot “metric is recorded for both participants” |
 | — | Sign-in page wording | mentions optional session reminders | — |
+
+## Friend chats, queue repair, reminder edge cases (2026-10-20)
+
+**Friends are persistent chats, not reconnection invitations.** Each friendship (`connections`) has at most one conversation with `kind = 'friend'` (partial unique index `one_friend_thread_per_connection`; `open_friend_thread` is idempotent and safe under concurrent taps). Aliases from the original conversation are kept. Either person can write at any time, including outside session hours and while the other is offline; messages go through the same pre-delivery moderation and appear when the other person next opens the chat. Friends shows an unread count per thread and the Friends tab shows the total. "Give us a question" asks the model for one question on demand (rate-limited 10/hour per person). There are no inactivity rules; a thread ends only when someone removes the friend or blocks the other person.
+
+**Fully separate from new-person matching.** `has_active_conversation()` counts only `kind = 'live'` conversations, so friend chats never block joining the queue, accepting an invitation, or the lobby's "you're in a conversation" redirect. Presence, partner-away, abandonment and the opening-round flow apply to live conversations only. Metrics (`conversation_started`, `conversation_opened`, `successful_participants`) ignore friend threads. The old `request_reconnection` RPC is dropped; legacy `reconnect` invitations were expired by migration 0008.
+
+**Controls and privacy in friend chats:** mute (no pushes, still counted as unread), remove friend (ends the friendship for both; existing messages stay readable until they expire; no new messages), block (ends every thread between the two and cancels undelivered messages), report (unchanged). Push for friend messages is a **separate consent** (Profile → "Notify me about new friend messages"), the lock-screen text is always "You have a new message." with no name or content, and at most one push per thread per 10 minutes. Friend messages are deleted 30 days after they were sent (`purge_retention`), independent of whether the thread is open.
+
+**Stranded queue repair:** `leave_queue` now declines a pending invitation and requeues the other person; `open_conversation_for_invitation` requeues anyone whose competing invitation it declines; `join_queue` and `expire_stale` repair `invited` rows whose invitation is no longer pending; migration 0008 repaired existing rows. `respond_invitation` takes the per-account advisory locks (sorted) before locking the invitation row (migration 0009), which removed a deadlock found by the new concurrency test (two invitations sharing a person, accepted at the same time).
+
+**Reminder/calendar edge cases:** "next session only" computes the target session on the server (`pickNextReminderSession`; 409 if there is no upcoming session) and the confirmation shows that date; "selected days" cannot be saved with no days (400 + disabled button); `/api/calendar?days=` with an empty value yields no days (400), not Sunday. Profile editing shows a load error with "Try again" instead of a blank form.
+
+**Metrics:** `successful_participants` (people whose live conversation opened) is reported next to `conversations_opened` (distinct conversations). Two people, one conversation → 2 joins, 2 successful participants, 1 conversation, 100 %.
+
+**Verified locally (browser, real Claude moderation):** Friends → Message → friend chat opened → message delivered → "Give us a question" generated one. **Not verified:** friend-message push on a physical phone; the two-device friend-chat flow on the hosted project; reminder email delivery for the new "next session" target.
 
 ## Reminder setup (2026-10-20 update)
 
@@ -125,11 +141,13 @@ All nine findings were confirmed and fixed in `2c165c7` (migration `0004_review_
 ## Session schedule & reminders — configuration
 
 - Change the schedule in Review → Policy (`session_days` as `[0..6]`, `session_start_time` `"HH:MM"`, `session_duration_minutes`, `session_timezone` IANA). All surfaces read the same values; downloaded calendar events do **not** update themselves.
-- Broadening thresholds: `broaden_relaxed_after_seconds` (60), `broaden_any_after_seconds` (120), `relaxed_difference_score` (0.5), `min_difference_score` (1.0). Presence: `presence_grace_seconds` (45). Invitation acceptance: `invitation_ttl_seconds` (60).
+- Broadening thresholds: `broaden_relaxed_after_seconds` (60), `broaden_any_after_seconds` (120), `relaxed_difference_score` (0.20), `min_difference_score` (0.40). Presence: `presence_grace_seconds` (45). Invitation acceptance: `invitation_ttl_seconds` (60).
 - Push needs `NEXT_PUBLIC_VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` (set on Vercel). Email reminders use the same SMTP/Resend settings as other mail.
 - Scheduler: `worker_config` rows `tick_url` and `cron_secret` on the hosted database (set via service role); the cron job `common-ground-tick` is created by migration 0005.
 
 ## Change log
+
+- 2026-10-20 — Friends as persistent chats (one thread per friendship, offline delivery, unread counts, on-demand question, mute/remove/block, separate neutral push consent with flood guard, 30-day per-message retention), live-only scoping of the one-active-conversation rule and metrics, stranded-queue repair and acceptance lock ordering, server-side "next session" reminder target, strict calendar day parsing, profile load error handling. Migrations 0008, 0009. 84 tests.
 
 - 2026-10-20 — Third review fixes (push endpoint allowlist, one conversation per person, calendar first occurrence, reminder renewal, edit prefill, shared-device sign-out, both-side metric, sign-in wording). Migration 0007. 79 tests.
 

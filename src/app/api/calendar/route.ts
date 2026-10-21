@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getScheduleConfig } from "@/lib/schedule-config";
-import { buildIcs, googleCalendarUrl, effectiveDays, type CalendarMode } from "@/lib/calendar";
+import { buildIcs, googleCalendarUrl, effectiveDays, parseDaysParam, type CalendarMode } from "@/lib/calendar";
 import { env } from "@/lib/env";
 
 // GET /api/calendar?mode=next|weekdays|daily&days=1,2,3[&google=1]
@@ -8,7 +8,8 @@ import { env } from "@/lib/env";
 export async function GET(req: Request) {
   const url = new URL(req.url);
   const mode = (["next", "weekdays", "daily"].includes(url.searchParams.get("mode") ?? "") ? url.searchParams.get("mode") : "daily") as CalendarMode;
-  const days = (url.searchParams.get("days") ?? "").split(",").map(Number).filter((d) => Number.isInteger(d) && d >= 0 && d <= 6);
+  const days = parseDaysParam(url.searchParams.get("days"));
+  if (!days) return NextResponse.json({ error: "Invalid day selection" }, { status: 400 });
   const cfg = await getScheduleConfig();
   const site = env.siteUrl();
   if (!effectiveDays(mode, days, cfg)) return NextResponse.json({ error: "Pick at least one session day" }, { status: 400 });

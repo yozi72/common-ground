@@ -36,7 +36,7 @@ function Icon({ name, active }: { name: string; active: boolean }) {
   );
 }
 
-export function TabBar({ isAdmin = false }: { isAdmin?: boolean }) {
+export function TabBar({ isAdmin = false, unread = 0 }: { isAdmin?: boolean; unread?: number }) {
   const path = usePathname();
   const tabs = isAdmin ? [...TABS, { href: "/admin", label: "Review", match: (p: string) => p.startsWith("/admin") }] : TABS;
   return (
@@ -47,7 +47,10 @@ export function TabBar({ isAdmin = false }: { isAdmin?: boolean }) {
           return (
             <li key={t.href}>
               <Link href={t.href} aria-current={active ? "page" : undefined} className="flex flex-col items-center gap-0.5 py-2 text-xs font-semibold" style={{ color: active ? "var(--accent)" : "var(--muted)" }}>
-                <Icon name={t.label} active={active} />
+                <span className="relative">
+                  <Icon name={t.label} active={active} />
+                  {t.label === "Friends" && unread > 0 && <span className="count absolute -top-1 -right-3" aria-label={`${unread} unread`}>{unread}</span>}
+                </span>
                 {t.label}
               </Link>
             </li>

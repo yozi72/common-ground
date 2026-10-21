@@ -28,17 +28,21 @@ export default function Onboarding() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadAttempt, setLoadAttempt] = useState(0);
 
   // Editing: start from what is already saved so unchanged answers are kept.
+  // A failed load blocks submission (otherwise an empty form could overwrite saved data).
   useEffect(() => {
     let cancelled = false;
     (async () => {
       const sb = supabaseBrowser();
-      const [{ data: profile }, { data: account }] = await Promise.all([
+      const [{ data: profile, error: e1 }, { data: account, error: e2 }] = await Promise.all([
         sb.from("profiles").select("age_band, region, community, life_context, share_context_with_prompts, political_answers, political_nonanswers, issue_priorities, questionnaire_version").limit(1).maybeSingle(),
         sb.from("accounts").select("onboarding_complete, adult_attested_at").limit(1).maybeSingle(),
       ]);
       if (cancelled) return;
+      if (e1 || e2) { setLoadError((e1 ?? e2)?.message ?? "Couldn't load your profile"); return; }
       if (profile) {
         setAgeBand(profile.age_band ?? ""); setRegion(profile.region ?? ""); setCommunity(profile.community ?? "");
         setContext(profile.life_context ?? []); setShareContext(!!profile.share_context_with_prompts);
@@ -52,7 +56,7 @@ export default function Onboarding() {
       setLoaded(true);
     })();
     return () => { cancelled = true; };
-  }, []);
+  }, [loadAttempt]);
 
   const answered = Object.keys(answers).length;
   const qIndex = screen - QUESTION_START;
@@ -70,6 +74,12 @@ export default function Onboarding() {
     router.push("/lobby");
   }
 
+  if (loadError) return (
+    <div className="card space-y-3">
+      <p className="notice notice-bad" role="alert">We couldn&apos;t load your saved profile ({loadError}). To avoid overwriting your answers, editing is paused.</p>
+      <button className="btn btn-primary" onClick={() => { setLoadError(null); setLoadAttempt((n) => n + 1); }}>Try again</button>
+    </div>
+  );
   if (!loaded) return <p className="muted">Loading…</p>;
 
   return (

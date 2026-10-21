@@ -2,6 +2,7 @@ import { z } from "zod";
 import { after } from "next/server";
 import { handle, ok, parseBody, requireUser, fromRpcError, ApiError } from "@/lib/api";
 import { maybeTick } from "@/lib/workers/tick";
+import { generateNextQuestion } from "@/lib/workers/questions";
 
 const Body = z.discriminatedUnion("action", [
   z.object({ action: z.literal("heartbeat") }),
@@ -15,6 +16,10 @@ const Body = z.discriminatedUnion("action", [
     also_block: z.boolean().default(false),
   }),
   z.object({ action: z.literal("connection_decision"), decision: z.boolean() }),
+  z.object({ action: z.literal("read") }),
+  z.object({ action: z.literal("mute"), muted: z.boolean() }),
+  z.object({ action: z.literal("question") }),
+  z.object({ action: z.literal("remove_friend"), connection_id: z.string().uuid() }),
   z.object({
     action: z.literal("reflection"),
     felt_understood: z.number().int().min(1).max(5).optional(),
@@ -58,6 +63,29 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
         const { data, error } = await supabase.rpc("set_connection_decision", { p_conversation: id, p_decision: b.decision });
         if (error) throw fromRpcError(error);
         return ok(data);
+      }
+      case "read": {
+        const { error } = await supabase.rpc("mark_thread_read", { p_conversation: id });
+        if (error) throw fromRpcError(error);
+        return ok();
+      }
+      case "mute": {
+        const { error } = await supabase.rpc("set_thread_muted", { p_conversation: id, p_muted: b.muted });
+        if (error) throw fromRpcError(error);
+        return ok();
+      }
+      case "question": {
+        // optional shared question in a friend thread; same model inputs and consent rules as always
+        const { data: allowed, error } = await supabase.rpc("can_request_question", { p_conversation: id });
+        if (error) throw fromRpcError(error);
+        if (!allowed) return ok({ created: false });
+        const qid = await generateNextQuestion(id, "mid");
+        return ok({ created: !!qid });
+      }
+      case "remove_friend": {
+        const { error } = await supabase.rpc("remove_friend", { p_connection: b.connection_id });
+        if (error) throw fromRpcError(error);
+        return ok();
       }
       case "reflection": {
         const { data: pid } = await supabase.rpc("my_participant_id", { p_conversation: id });

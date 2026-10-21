@@ -4,7 +4,7 @@ import { useRouter } from "next/navigation";
 import { supabaseBrowser } from "@/lib/supabase/client";
 import { TwoCups } from "@/components/Illustrations";
 
-type Conv = { id: string; status: "opening" | "chatting" | "ended"; opening_question_count: number; questions_asked: number; end_reason: string | null };
+type Conv = { id: string; status: "opening" | "chatting" | "ended"; opening_question_count: number; questions_asked: number; end_reason: string | null; kind?: "live" | "friend" };
 type Question = { id: string; seq: number; phase: "opening" | "mid"; question_text: string; choices: string[]; status: "open" | "revealed" | "closed"; created_at: string; revealed_at: string | null };
 type Answer = { question_id: string; participant_id: string; choice_index: number | null; custom_text: string | null; status: string };
 type Msg = { id: string; sender_participant_id: string; kind: "chat" | "answer"; body: string; created_at: string };
@@ -12,7 +12,7 @@ type Pending = { id: string; client_send_id: string; kind: "chat" | "answer"; qu
 
 const PENDING_CANCEL_AFTER_MS = 45_000;
 
-export function Conversation({ conversationId, myParticipantId, myAlias, peerAlias, peerBadges = [] }: { conversationId: string; myParticipantId: string; myAlias: string; peerAlias: string; peerBadges?: string[] }) {
+export function Conversation({ conversationId, myParticipantId, myAlias, peerAlias, peerBadges = [], kind = "live", connectionId = null, initialMuted = false }: { conversationId: string; myParticipantId: string; myAlias: string; peerAlias: string; peerBadges?: string[]; kind?: "live" | "friend"; connectionId?: string | null; initialMuted?: boolean }) {
   const router = useRouter();
   const [conv, setConv] = useState<Conv | null>(null);
   const [questions, setQuestions] = useState<Question[]>([]);
@@ -23,14 +23,16 @@ export function Conversation({ conversationId, myParticipantId, myAlias, peerAli
   const [error, setError] = useState<string | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [reporting, setReporting] = useState(false);
-  const [confirming, setConfirming] = useState<"leave" | "block" | null>(null);
+  const [confirming, setConfirming] = useState<"leave" | "block" | "unfriend" | null>(null);
+  const [muted, setMuted] = useState(initialMuted);
+  const isFriend = kind === "friend";
   const [now, setNow] = useState(0);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   const load = useCallback(async () => {
     const sb = supabaseBrowser();
     const [c, q, a, m, p, n] = await Promise.all([
-      sb.from("conversations").select("id, status, opening_question_count, questions_asked, end_reason").eq("id", conversationId).maybeSingle(),
+      sb.from("conversations").select("id, status, opening_question_count, questions_asked, end_reason, kind").eq("id", conversationId).maybeSingle(),
       sb.from("conversation_questions").select("id, seq, phase, question_text, choices, status, created_at, revealed_at").eq("conversation_id", conversationId).order("seq"),
       sb.from("question_answers").select("question_id, participant_id, choice_index, custom_text, status").eq("conversation_id", conversationId),
       sb.from("approved_messages").select("id, sender_participant_id, kind, body, created_at").eq("conversation_id", conversationId).order("created_at"),
@@ -43,7 +45,8 @@ export function Conversation({ conversationId, myParticipantId, myAlias, peerAli
     setMessages((m.data ?? []) as Msg[]);
     setPending((p.data ?? []) as Pending[]);
     setPartnerAway(!!n.data?.length);
-    if (c.data?.status === "ended") router.push(`/c/${conversationId}/reflect`);
+    if (c.data?.status === "ended" && c.data?.kind !== "friend") router.push(`/c/${conversationId}/reflect`);
+    if (c.data?.kind === "friend" && c.data?.status !== "ended") fetch(`/api/conversations/${conversationId}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "read" }) }).catch(() => {});
   }, [conversationId, router]);
 
   useEffect(() => { const t = setTimeout(load, 0); return () => clearTimeout(t); }, [load]);
@@ -59,11 +62,11 @@ export function Conversation({ conversationId, myParticipantId, myAlias, peerAli
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "notifications" }, load)
       .subscribe();
     const poll = setInterval(load, 5000);
-    const hb = setInterval(() => fetch(`/api/conversations/${conversationId}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "heartbeat" }) }), 30_000);
+    const hb = setInterval(() => { if (!isFriend) fetch(`/api/conversations/${conversationId}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "heartbeat" }) }); }, 30_000);
     const clock = setInterval(() => setNow(Date.now()), 1000);
     const clock0 = setTimeout(() => setNow(Date.now()), 0);
     return () => { sb.removeChannel(ch); clearInterval(poll); clearInterval(hb); clearInterval(clock); clearTimeout(clock0); };
-  }, [conversationId, load]);
+  }, [conversationId, load, isFriend]);
 
   // Faster polling while something of mine is still being checked.
   const hasLivePending = pending.some((p) => p.status === "pending");
@@ -111,8 +114,8 @@ export function Conversation({ conversationId, myParticipantId, myAlias, peerAli
             <Avatar alias={peerAlias} />
           </div>
           <div className="min-w-0">
-            <h1 className="text-xl font-semibold truncate">You &amp; {peerAlias}</h1>
-            <p className="muted text-xs">You're {myAlias}. {conv.status === "opening" ? `Question ${Math.min(conv.questions_asked, conv.opening_question_count)} of ${conv.opening_question_count}` : "Open conversation"}</p>
+            <h1 className="text-xl font-semibold truncate">{isFriend ? `Friend chat · ${peerAlias}` : `You & ${peerAlias}`}</h1>
+            <p className="muted text-xs">You're {myAlias}. {isFriend ? (conv.status === "ended" ? "This friendship has ended; history only." : muted ? "Muted · messages are checked before delivery · deleted 30 days after sending" : "Messages are checked before delivery · deleted 30 days after sending") : conv.status === "opening" ? `Question ${Math.min(conv.questions_asked, conv.opening_question_count)} of ${conv.opening_question_count}` : "Open conversation"}</p>
             {peerBadges.length > 0 && (
               <ul className="flex flex-wrap gap-1 mt-1" aria-label={`About ${peerAlias}`}>
                 {peerBadges.map((b) => <li key={b} className="badge">{b}</li>)}
@@ -126,18 +129,25 @@ export function Conversation({ conversationId, myParticipantId, myAlias, peerAli
             <ul role="menu" className="card absolute right-0 mt-1 w-56 p-1 z-10 text-sm shadow-lg">
               <li><button role="menuitem" className="btn btn-ghost w-full justify-start" onClick={() => { setMenuOpen(false); setReporting(true); }}>Report</button></li>
               <li><button role="menuitem" className="btn btn-ghost w-full justify-start" onClick={() => { setMenuOpen(false); setConfirming("block"); }}>Block and end</button></li>
-              <li><button role="menuitem" className="btn btn-ghost w-full justify-start" onClick={() => { setMenuOpen(false); setConfirming("leave"); }}>Leave conversation</button></li>
+              {isFriend ? (
+                <>
+                  {conv.status !== "ended" && <li><button role="menuitem" className="btn btn-ghost w-full justify-start" onClick={async () => { setMenuOpen(false); const r = await api(`/api/conversations/${conversationId}`, { action: "mute", muted: !muted }); if (r) setMuted(!muted); }}>{muted ? "Unmute notifications" : "Mute notifications"}</button></li>}
+                  {conv.status !== "ended" && <li><button role="menuitem" className="btn btn-ghost w-full justify-start" onClick={() => { setMenuOpen(false); setConfirming("unfriend"); }}>Remove friend</button></li>}
+                </>
+              ) : (
+                <li><button role="menuitem" className="btn btn-ghost w-full justify-start" onClick={() => { setMenuOpen(false); setConfirming("leave"); }}>Leave conversation</button></li>
+              )}
             </ul>
           )}
         </div>
       </header>
 
-      {conv.status === "opening" && (
+      {!isFriend && conv.status === "opening" && (
         <div className="progress" role="progressbar" aria-label="Opening questions" aria-valuemin={0} aria-valuemax={conv.opening_question_count} aria-valuenow={Math.max(0, conv.questions_asked - 1)}>
           <div className="progress-fill" style={{ width: `${Math.round((Math.max(0, conv.questions_asked - 1) / conv.opening_question_count) * 100)}%` }} />
         </div>
       )}
-      {conv.status === "chatting" && timeline.length > 0 && !openQuestion && (
+      {!isFriend && conv.status === "chatting" && timeline.length > 0 && !openQuestion && (
         <p className="text-center text-xs muted">Chat is open. A new shared question will come along now and then.</p>
       )}
 
@@ -146,10 +156,13 @@ export function Conversation({ conversationId, myParticipantId, myAlias, peerAli
 
       {confirming && (
         <section className="card space-y-3" role="alertdialog" aria-labelledby="confirm-title">
-          <h2 id="confirm-title" className="font-medium">{confirming === "block" ? "Block this person and end the conversation?" : "End this conversation?"}</h2>
-          <p className="muted text-sm">{confirming === "block" ? "You won't be matched with them again, and they won't be told who blocked them. This can't be undone." : `${peerAlias} will be told the conversation ended. You'll both get a chance to reflect.`}</p>
+          <h2 id="confirm-title" className="font-medium">{confirming === "block" ? "Block this person and end the conversation?" : confirming === "unfriend" ? `Remove ${peerAlias} as a friend?` : "End this conversation?"}</h2>
+          <p className="muted text-sm">{confirming === "block" ? "You won't be matched with them again, and they won't be told who blocked them. This can't be undone." : confirming === "unfriend" ? "Neither of you can send new messages. Existing messages stay readable until they expire. This can't be undone." : `${peerAlias} will be told the conversation ended. You'll both get a chance to reflect.`}</p>
           <div className="flex gap-2">
-            <button className={confirming === "block" ? "btn btn-danger" : "btn btn-primary"} onClick={async () => { const r = await api(`/api/conversations/${conversationId}`, { action: confirming }); if (r) router.push(`/c/${conversationId}/reflect`); }}>{confirming === "block" ? "Block and end" : "End conversation"}</button>
+            <button className={confirming === "leave" ? "btn btn-primary" : "btn btn-danger"} onClick={async () => {
+              if (confirming === "unfriend") { const r = await api(`/api/conversations/${conversationId}`, { action: "remove_friend", connection_id: connectionId }); if (r) { setConfirming(null); await load(); } return; }
+              const r = await api(`/api/conversations/${conversationId}`, { action: confirming }); if (r) router.push(isFriend ? "/connections" : `/c/${conversationId}/reflect`);
+            }}>{confirming === "block" ? "Block and end" : confirming === "unfriend" ? "Remove friend" : "End conversation"}</button>
             <button className="btn btn-secondary" onClick={() => setConfirming(null)}>Keep talking</button>
           </div>
         </section>
@@ -161,7 +174,12 @@ export function Conversation({ conversationId, myParticipantId, myAlias, peerAli
         {timeline.length === 0 && (
           <div className="text-center py-6 space-y-2">
             <TwoCups className="w-36 h-auto mx-auto float" />
-            {openQuestion ? (
+            {isFriend ? (
+              <>
+                <p className="font-semibold">Say hello whenever you like</p>
+                <p className="muted text-sm max-w-sm mx-auto">{peerAlias} doesn&apos;t need to be online; they&apos;ll see it when they&apos;re back. Want a shared question to get going? Use &ldquo;Give us a question&rdquo; below.</p>
+              </>
+            ) : openQuestion ? (
               <>
                 <p className="font-semibold">Ten shared questions to start</p>
                 <p className="muted text-sm max-w-sm mx-auto">You both get the same question. Answers stay hidden until you&apos;ve both answered, then appear together here.</p>
@@ -186,6 +204,14 @@ export function Conversation({ conversationId, myParticipantId, myAlias, peerAli
         />
       )}
 
+      {isFriend && conv.status === "ended" && (
+        <p className="notice notice-warn text-sm" role="status">{conv.end_reason === "blocked" ? "This conversation was ended with a block." : "This friendship has ended. No new messages can be sent; what's here stays readable until it expires."}</p>
+      )}
+      {isFriend && conv.status !== "ended" && !openQuestion && (
+        <div className="flex justify-center">
+          <button className="btn btn-secondary text-sm" onClick={async () => { const r = await api(`/api/conversations/${conversationId}`, { action: "question" }); if (r && !r.created) setError("No new question right now; try again in a bit."); await load(); }}>Give us a question</button>
+        </div>
+      )}
       {conv.status === "chatting" && (
         <Composer conversationId={conversationId} pending={pending.filter((p) => p.kind === "chat" && !["approved", "cancelled"].includes(p.status))}
           onSent={load} onPendingAction={(id, action, note) => api(`/api/messages/${id}`, { action, note }).then(load)} api={api} now={now} />

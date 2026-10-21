@@ -8,7 +8,7 @@
 # Common Ground — project facts
 
 ## What it is
-An anonymous, moderated text-conversation pilot that pairs adults who answered a short policy questionnaire differently, gives both the same human (non-political) questions, then opens chat. One shared daily "conversation hour" (default 6–7 pm America/Los_Angeles). Product brief and decisions: `DECISIONS.md`. Status, known issues, test script for reviewers: `HANDOFF.md` (keep it updated on every push; ChatGPT reviews from it). Running notes: `NOTES.md`.
+An anonymous, moderated text-conversation pilot that pairs adults who answered a short policy questionnaire differently, gives both the same human (non-political) questions, then opens chat. One shared daily "conversation hour" (default 6–7 pm America/Los_Angeles) for meeting new people; friendships formed afterwards get a persistent chat that works any time. Product brief and decisions: `DECISIONS.md`. Status, known issues, test script for reviewers: `HANDOFF.md` (keep it updated on every push; ChatGPT reviews from it). Running notes: `NOTES.md`.
 
 ## Stack
 - Next.js 16 (App Router, `src/`), React 19, Tailwind v4, TypeScript. `proxy.ts` (not middleware) refreshes the Supabase session and gates pages.
@@ -17,6 +17,11 @@ An anonymous, moderated text-conversation pilot that pairs adults who answered a
 - Workers: `src/lib/workers/*`; `/api/cron/tick` is called every minute by `pg_cron` in the hosted database (`worker_config` holds URL + secret).
 - Deploy: Vercel project `common-ground` (free plan) via `npx vercel deploy --prod --yes`; env vars on Vercel; GitHub `yozi72/common-ground` (public).
 - Tests: `npm test` (vitest; needs local Supabase and `.env.local` exported). Probe of the real model: `npm run probe` (costs API calls).
+
+## Two kinds of conversation (lasting distinction)
+- **Live session with a new person** (`conversations.kind = 'live'`): only during the daily session window, via queue → invitation (60 s) → two-party acceptance; opening round of shared questions; presence/partner-away/abandonment rules; at most one active live conversation per person (`has_active_conversation`, live only); feeds matching metrics.
+- **Friend chat** (`conversations.kind = 'friend'`): exactly one per friendship (`open_friend_thread`, unique partial index), aliases retained, usable any time and offline, no session gating, no presence or inactivity rules, no opening round; "Give us a question" is on demand. Never blocks the queue, lobby, matching or metrics. Controls: mute, remove friend, block, report. Push is a separate consent, always the neutral "You have a new message.", one per thread per 10 minutes. Messages are deleted 30 days after they were sent.
+- Both kinds share moderation (`submit_message` → worker → `apply_moderation_decision`), RLS and Realtime. New code that touches presence, queueing, matching or metrics must scope to `kind = 'live'`.
 
 ## Conventions
 - All client writes go through SECURITY DEFINER RPCs that start with `assert_user()`; worker RPCs have EXECUTE revoked from `authenticated` and call `assert_service_role()`.

@@ -5,6 +5,7 @@ import { badgesFor, nextMilestone, type Stats } from "@/lib/badges";
 import { Lantern } from "@/components/Illustrations";
 import { ReminderControls } from "@/components/ReminderControls";
 import { TimezoneSetting } from "./TimezoneSetting";
+import { FriendPushSetting } from "./FriendPushSetting";
 import { SignOutButton } from "@/components/SignOutButton";
 import { env } from "@/lib/env";
 import { getScheduleConfig, serverNow } from "@/lib/schedule-config";
@@ -19,7 +20,7 @@ export default async function SettingsPage() {
   const [{ data: profile }, { data: statsRows }, { data: prefs }, schedule] = await Promise.all([
     supabase.from("profiles").select("age_band, region, community, life_context, share_context_with_prompts, political_answers, issue_priorities, timezone_override").eq("account_id", auth.user.id).maybeSingle(),
     supabase.rpc("my_stats"),
-    supabase.from("reminder_prefs").select("push_enabled, email_enabled, mode, days, minutes_before, next_session_start").eq("account_id", auth.user.id).maybeSingle(),
+    supabase.from("reminder_prefs").select("push_enabled, email_enabled, mode, days, minutes_before, next_session_start, friend_push_enabled").eq("account_id", auth.user.id).maybeSingle(),
     getScheduleConfig(),
   ]);
   const upcoming = nextSessions(serverNow(), 1, schedule)[0] ?? null;
@@ -66,6 +67,8 @@ export default async function SettingsPage() {
         <p className="muted text-sm">The conversation hour is the same shared hour for everyone, every session day. Reminders are optional and you can turn them off here any time.</p>
         <ReminderControls initial={(prefs as never) ?? null} schedule={schedule} pushAvailable={env.pushConfigured()} emailAvailable={env.emailConfigured()} vapidKey={process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY ?? null} nextSessionStartIso={upcoming ? new Date(upcoming.start).toISOString() : null} />
       </section>
+
+      <FriendPushSetting initial={!!(prefs as { friend_push_enabled?: boolean } | null)?.friend_push_enabled} pushAvailable={env.pushConfigured()} />
 
       <TimezoneSetting override={profile?.timezone_override ?? null} />
 

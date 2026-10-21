@@ -126,3 +126,9 @@ export function formatCountdown(ms: number) {
   if (h > 0) return `${h}h ${String(m).padStart(2, "0")}m`;
   return `${m}:${String(sec).padStart(2, "0")}`;
 }
+
+// "Next session only" target: the first upcoming session whose reminder time
+// has not passed yet (a session already underway is never chosen).
+export function pickNextReminderSession(nowMs: number, minutesBefore: number, cfg: ScheduleConfig = DEFAULT_SCHEDULE, marginMs = 30_000): Session | null {
+  return nextSessions(nowMs, 3, cfg).find((s) => s.start - minutesBefore * 60_000 > nowMs + marginMs) ?? null;
+}

@@ -3,12 +3,15 @@ import { handle, ok, parseBody, requireUser, fromRpcError, ApiError } from "@/li
 import { env } from "@/lib/env";
 import { isValidTimeZone } from "@/lib/schedule";
 import { isAllowedPushEndpoint } from "@/lib/push-endpoint";
+import { getScheduleConfig } from "@/lib/schedule-config";
+import { pickNextReminderSession } from "@/lib/schedule";
 
 const Body = z.discriminatedUnion("action", [
   z.object({
     action: z.literal("prefs"),
     push_enabled: z.boolean().optional(),
     email_enabled: z.boolean().optional(),
+    friend_push_enabled: z.boolean().optional(),
     mode: z.enum(["next", "weekdays", "daily"]).optional(),
     days: z.array(z.number().int().min(0).max(6)).max(7).optional(),
     next_session_start: z.string().datetime().nullable().optional(),
@@ -29,13 +32,27 @@ export async function POST(req: Request) {
         if (b.push_enabled && !env.pushConfigured()) throw new ApiError(409, "Phone notifications aren't set up on this server yet");
         if (b.email_enabled && !env.emailConfigured()) throw new ApiError(409, "Email reminders aren't set up on this server yet");
         if (b.timezone && !isValidTimeZone(b.timezone)) throw new ApiError(400, "Unknown timezone");
-        const patch = Object.fromEntries(Object.entries(b).filter(([k, v]) => k !== "action" && v !== undefined));
+        if ((b.friend_push_enabled || b.push_enabled) && !env.pushConfigured()) throw new ApiError(409, "Phone notifications aren't set up on this server yet");
+        if (b.mode === "weekdays" && (!b.days || b.days.length === 0)) throw new ApiError(400, "Pick at least one day");
+        const patch: Record<string, unknown> = Object.fromEntries(Object.entries(b).filter(([k, v]) => k !== "action" && v !== undefined));
+        // "next session only": the server picks the next session whose reminder time hasn't passed (never a client timestamp)
+        if (b.mode === "next") {
+          const cfg = await getScheduleConfig();
+          const target = pickNextReminderSession(Date.now(), b.minutes_before ?? 10, cfg);
+          if (!target) throw new ApiError(409, "There's no upcoming session to remind you about yet");
+          patch.next_session_start = new Date(target.start).toISOString();
+        } else {
+          delete patch.next_session_start;
+        }
         const { error } = await supabase.from("reminder_prefs").upsert({ account_id: user.id, ...patch, updated_at: new Date().toISOString() }, { onConflict: "account_id" });
         if (error) throw fromRpcError(error);
         if (b.email_enabled !== undefined || b.push_enabled !== undefined) {
           await supabase.from("consent_events").insert({ account_id: user.id, kind: "reminders", version: "v1", granted: !!(b.email_enabled || b.push_enabled) });
         }
-        return ok();
+        if (b.friend_push_enabled !== undefined) {
+          await supabase.from("consent_events").insert({ account_id: user.id, kind: "friend_push", version: "v1", granted: b.friend_push_enabled });
+        }
+        return ok({ next_session_start: (patch.next_session_start as string | undefined) ?? null });
       }
       case "subscribe": {
         if (!env.pushConfigured()) throw new ApiError(409, "Phone notifications aren't set up on this server yet");

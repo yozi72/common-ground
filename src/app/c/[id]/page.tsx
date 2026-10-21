@@ -20,11 +20,17 @@ export default async function ConversationPage({ params }: { params: Promise<{ i
   const myAlias = aliases?.find((a) => a.participant_id === me.id)?.alias ?? "You";
   const peerAlias = aliases?.find((a) => a.participant_id !== me.id)?.alias ?? "Your partner";
 
-  if (conv.status === "ended") redirect(`/c/${id}/reflect`);
+  if (conv.status === "ended" && conv.kind !== "friend") redirect(`/c/${id}/reflect`);
 
   // Coarse participation tiers of the other person (never exact counts).
   const { data: pb } = await supabase.rpc("peer_badges", { p_conversation: id });
   const peerBadges = peerBadgeLabels((Array.isArray(pb) ? pb[0] : pb) ?? null);
+  let muted = false;
+  if (conv.kind === "friend") {
+    const { data: tr } = await supabase.from("thread_reads").select("muted").eq("conversation_id", id).eq("account_id", auth.user.id).maybeSingle();
+    muted = !!tr?.muted;
+    await supabase.rpc("mark_thread_read", { p_conversation: id });
+  }
 
-  return <Conversation conversationId={id} myParticipantId={me.id} myAlias={myAlias} peerAlias={peerAlias} peerBadges={peerBadges} />;
+  return <Conversation conversationId={id} myParticipantId={me.id} myAlias={myAlias} peerAlias={peerAlias} peerBadges={peerBadges} kind={conv.kind} connectionId={conv.connection_id} initialMuted={muted} />;
 }

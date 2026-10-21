@@ -111,3 +111,10 @@ export function googleCalendarUrl(opts: { mode: CalendarMode; days: number[]; cf
   if (rule) p.set("recur", rule);
   return `https://calendar.google.com/calendar/render?${p.toString()}`;
 }
+
+// Strict parsing of a `days=` query value: empty entries are errors, not Sunday.
+export function parseDaysParam(raw: string | null): number[] | null {
+  const parts = (raw ?? "").split(",").map((x) => x.trim()).filter((x) => x.length > 0);
+  if (parts.some((x) => !/^[0-6]$/.test(x))) return null;
+  return [...new Set(parts.map(Number))];
+}

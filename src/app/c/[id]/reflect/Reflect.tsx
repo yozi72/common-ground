@@ -70,7 +70,7 @@ export function Reflect({ conversationId, peerAlias, endReason, questionsAsked, 
         <section className="card space-y-3" style={{ borderColor: "var(--accent)" }}>
           <Bridge className="w-32 h-auto mx-auto" />
           <h2 className="font-semibold text-xl text-center">Would you talk with {peerAlias} again?</h2>
-          <p className="muted text-sm">Your answer is private. If you both say yes, you'll both see it and can invite each other to another conversation, still under your aliases. If only one of you says yes, neither of you is told.</p>
+          <p className="muted text-sm">Your answer is private. If you both say yes, you'll both see it and get a shared chat you can use any time, still under your aliases. If only one of you says yes, neither of you is told.</p>
           {connected ? (
             <div className="notice notice-ok" role="status">You both said yes. You'll find {peerAlias} under <Link className="underline" href="/connections">Friends</Link>.</div>
           ) : decision === true ? (

@@ -31,8 +31,8 @@ export default async function LobbyPage() {
 
   // An open conversation takes priority over the queue.
   const { data: live } = await supabase
-    .from("participants").select("conversation_id, conversations!participants_conversation_id_fkey!inner(status)")
-    .eq("account_id", auth.user.id).is("left_at", null).neq("conversations.status", "ended").limit(1);
+    .from("participants").select("conversation_id, conversations!participants_conversation_id_fkey!inner(status, kind)")
+    .eq("account_id", auth.user.id).is("left_at", null).neq("conversations.status", "ended").eq("conversations.kind", "live").limit(1);
   if (live?.length) redirect(`/c/${live[0].conversation_id}`);
 
   const [{ data: request }, { data: invitations }, { data: profile }, { data: prefs }, schedule] = await Promise.all([

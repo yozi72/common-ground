@@ -20,7 +20,7 @@ Record of product and technical decisions for the Common Ground pilot, so the ne
 
 **Moderation outage.** Hold with backoff and visible explanation; sender may cancel after 45 s; after six failed attempts the message goes to human review. Nothing is ever passed on error.
 
-**Friendship/reconnection.** Enabled, no time gate, mutual private opt-in after any ended conversation (not after a block). Both find out only when both said yes. Reconnection reuses the original aliases. Policy version `v1-mutual-no-gate`; switchable off via `friendship_enabled`.
+**Friendship/reconnection.** Enabled, no time gate, mutual private opt-in after any ended conversation (not after a block). Both find out only when both said yes. Each friendship gets one persistent moderated chat (usable any time, offline delivery, 30-day per-message retention) under the original aliases; there are no reconnection invitations. Policy version `v1-mutual-no-gate`; switchable off via `friendship_enabled`.
 
 **Contact sharing.** Disabled. No feature, no toggle in the UI. `contact_sharing_enabled=false` is recorded for a future explicit policy.
 

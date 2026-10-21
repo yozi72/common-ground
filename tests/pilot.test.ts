@@ -458,66 +458,60 @@ describe("leaving, blocking, reporting", () => {
 });
 
 describe("reflection and reconnection", () => {
-  it("records private decisions; connects only when both say yes; reconnection reuses aliases", async () => {
+  it("records private decisions; connects only when both say yes; the friend thread reuses aliases", async () => {
     const a = await user("r-a", LEFT);
     const b = await user("r-b", RIGHT);
     const conv = await openConversation(a, b);
     const { data: aliases } = await a.client.from("participant_aliases").select("participant_id, alias").eq("conversation_id", conv);
     await a.client.rpc("leave_conversation", { p_conversation: conv });
-
-    await a.client.from("session_reflections").insert({ conversation_id: conv, participant_id: aliases![0].participant_id, felt_understood: 4 }).then(() => {});
     const { data: d1 } = await a.client.rpc("set_connection_decision", { p_conversation: conv, p_decision: true });
     expect(d1.status).toBe("recorded");
     const { data: bSees } = await b.client.from("connection_requests").select("*").eq("conversation_id", conv);
     expect(bSees).toEqual([]); // a's decision is private
-    const { data: bConns } = await b.client.rpc("my_connections");
+    const { data: bConns } = await b.client.rpc("friend_threads_overview");
     expect(bConns).toEqual([]);
     const { data: d2 } = await b.client.rpc("set_connection_decision", { p_conversation: conv, p_decision: true });
     expect(d2.status).toBe("connected");
-    const { data: conns } = await a.client.rpc("my_connections");
+    const { data: conns } = await a.client.rpc("friend_threads_overview");
     expect(conns!.length).toBe(1);
-    const aAlias = aliases!.find((x) => x.participant_id === conns![0].my_alias)?.alias;
-    void aAlias;
-    expect(new Set(aliases!.map((x) => x.alias))).toEqual(new Set([conns![0].my_alias, conns![0].peer_alias]));
-
-    // reconnect
-    const { data: inv } = await a.client.rpc("request_reconnection", { p_connection: conns![0].connection_id });
-    const { data: res } = await b.client.rpc("respond_invitation", { p_invitation: inv, p_accept: true });
-    expect(res.status).toBe("opened");
-    const { data: newAliases } = await b.client.from("participant_aliases").select("alias").eq("conversation_id", res.conversation_id);
+    expect(conns![0].conversation_id).toBeNull(); // no thread until someone opens it
+    const { data: tid } = await a.client.rpc("open_friend_thread", { p_connection: conns![0].connection_id });
+    const { data: newAliases } = await b.client.from("participant_aliases").select("alias").eq("conversation_id", tid);
     expect(new Set(newAliases!.map((x) => x.alias))).toEqual(new Set(aliases!.map((x) => x.alias)));
-    const { data: c } = await admin().from("conversations").select("connection_id").eq("id", res.conversation_id).single();
-    expect(c!.connection_id).toBe(conns![0].connection_id);
+    const { data: c } = await admin().from("conversations").select("kind, status, connection_id").eq("id", tid).single();
+    expect(c).toEqual({ kind: "friend", status: "chatting", connection_id: conns![0].connection_id });
   });
 
-  it("reconnect invitation state follows the server: pending → expired/declined → can invite again", async () => {
+  it("exactly one thread per friendship, even when both open it at once; removal ends it for both", async () => {
     const a = await user("ri-a", LEFT);
     const b = await user("ri-b", RIGHT);
     const conv = await openConversation(a, b);
     await a.client.rpc("leave_conversation", { p_conversation: conv });
     await a.client.rpc("set_connection_decision", { p_conversation: conv, p_decision: true });
     await b.client.rpc("set_connection_decision", { p_conversation: conv, p_decision: true });
-    const { data: c0 } = await a.client.rpc("my_connections");
+    const { data: c0 } = await a.client.rpc("friend_threads_overview");
     const connId = c0![0].connection_id as string;
-    // send
-    const { data: inv1 } = await a.client.rpc("request_reconnection", { p_connection: connId });
-    let { data: c1 } = await a.client.rpc("my_connections");
-    expect(c1![0].pending_invitation_id).toBe(inv1);
-    // expire → the Friends list (server data) no longer reports it
-    await admin().from("match_invitations").update({ expires_at: new Date(Date.now() - 1000).toISOString() }).eq("id", inv1);
-    ({ data: c1 } = await a.client.rpc("my_connections"));
-    expect(c1![0].pending_invitation_id).toBeNull();
-    await admin().rpc("expire_stale");
-    // invite again, then the other side declines → cleared again
-    const { data: inv2 } = await a.client.rpc("request_reconnection", { p_connection: connId });
-    expect(inv2).not.toBe(inv1);
-    await b.client.rpc("respond_invitation", { p_invitation: inv2, p_accept: false });
-    const { data: c2 } = await a.client.rpc("my_connections");
-    expect(c2![0].pending_invitation_id).toBeNull();
-    // and a third invitation is accepted
-    const { data: inv3 } = await a.client.rpc("request_reconnection", { p_connection: connId });
-    const { data: r } = await b.client.rpc("respond_invitation", { p_invitation: inv3, p_accept: true });
-    expect(r.status).toBe("opened");
+    const results = await Promise.all([
+      a.client.rpc("open_friend_thread", { p_connection: connId }),
+      b.client.rpc("open_friend_thread", { p_connection: connId }),
+      a.client.rpc("open_friend_thread", { p_connection: connId }),
+    ]);
+    expect(results.every((r) => !r.error)).toBe(true);
+    expect(new Set(results.map((r) => r.data)).size).toBe(1);
+    const { data: threads } = await admin().from("conversations").select("id").eq("connection_id", connId).eq("kind", "friend");
+    expect(threads!.length).toBe(1);
+    // a stranger cannot open it
+    const c = await user("ri-c", MIXED);
+    const { error } = await c.client.rpc("open_friend_thread", { p_connection: connId });
+    expect(error?.code).toBe("42501");
+    // removal: no new messages, history readable, thread ended with reason
+    await a.client.rpc("remove_friend", { p_connection: connId });
+    const { error: e2 } = await b.client.rpc("submit_message", { p_conversation: results[0].data, p_client_send_id: "x1", p_body: "still there?" });
+    expect(e2?.message).toMatch(/ended/);
+    const { data: cv } = await admin().from("conversations").select("status, end_reason").eq("id", results[0].data).single();
+    expect(cv).toEqual({ status: "ended", end_reason: "unfriended" });
+    const { error: e3 } = await a.client.rpc("open_friend_thread", { p_connection: connId });
+    expect(e3).toBeNull(); // existing thread id is still returned for history
   });
 
   it("friendship can be disabled by policy", async () => {
@@ -658,21 +652,19 @@ describe("daily session, readiness, nonresponders, broadening", () => {
     await admin().rpc("expire_stale");
     const { data: reqs } = await admin().from("availability_requests").select("status").in("account_id", [a.id, b.id]);
     expect(reqs!.map((x) => x.status)).toEqual(["expired", "expired"]);
-    // reconnection requests are refused while closed
+    // friend chats are independent of session hours
     await openSessionNow();
     const conv = await openConversation(a, b);
     await a.client.rpc("leave_conversation", { p_conversation: conv });
     await a.client.rpc("set_connection_decision", { p_conversation: conv, p_decision: true });
     await b.client.rpc("set_connection_decision", { p_conversation: conv, p_decision: true });
-    const { data: conns } = await a.client.rpc("my_connections");
+    const { data: conns } = await a.client.rpc("friend_threads_overview");
     await closeSessions();
-    const rr = await a.client.rpc("request_reconnection", { p_connection: conns![0].connection_id });
-    expect(rr.error?.message).toMatch(/not open/);
-    await openSessionNow();
-    const { data: inv, error } = await a.client.rpc("request_reconnection", { p_connection: conns![0].connection_id });
+    const { data: tid, error } = await a.client.rpc("open_friend_thread", { p_connection: conns![0].connection_id });
     expect(error).toBeNull();
-    const { data: row } = await admin().from("match_invitations").select("expires_at, created_at").eq("id", inv).single();
-    expect(Date.parse(row!.expires_at) - Date.parse(row!.created_at)).toBeLessThanOrEqual(61_000);
+    const { error: e2 } = await a.client.rpc("submit_message", { p_conversation: tid, p_client_send_id: "closed-1", p_body: "hi from outside the hour" });
+    expect(e2).toBeNull();
+    await openSessionNow();
   });
 
   it("an invitation created before closing stays valid until its 60-second deadline", async () => {
@@ -840,64 +832,176 @@ describe("third review regressions (2026-10-20)", () => {
     expect(ok.error).toBeNull();
   });
 
-  it("a person already in a conversation cannot be put into a second one via Friends or matching", async () => {
+  it("friend threads never count as the active conversation; live matches stay exclusive", async () => {
     const a = await user("oc-a", LEFT);
     const b = await user("oc-b", RIGHT);
     const c = await user("oc-c", LEFT);
-    // b and c become friends first
     const conv0 = await openConversation(b, c);
     await b.client.rpc("leave_conversation", { p_conversation: conv0 });
     await b.client.rpc("set_connection_decision", { p_conversation: conv0, p_decision: true });
     await c.client.rpc("set_connection_decision", { p_conversation: conv0, p_decision: true });
-    const { data: conns } = await c.client.rpc("my_connections");
+    const { data: conns } = await c.client.rpc("friend_threads_overview");
+    const { data: tid } = await c.client.rpc("open_friend_thread", { p_connection: conns![0].connection_id });
+    await c.client.rpc("submit_message", { p_conversation: tid, p_client_send_id: "f1", p_body: "hey" });
     await resetQueue();
-    // b is now talking with a
+    // b, with an open friend thread, can still join the queue and get a live conversation
     const conv1 = await openConversation(a, b);
-    // c (free) invites b (busy): the sender check passes for c, b's acceptance must be refused
-    const { data: inv, error } = await c.client.rpc("request_reconnection", { p_connection: conns![0].connection_id });
+    const { data: live } = await admin().from("participants").select("conversation_id, conversations!participants_conversation_id_fkey!inner(status, kind)").eq("account_id", b.id).is("left_at", null).neq("conversations.status", "ended").eq("conversations.kind", "live");
+    expect(live!.map((x) => x.conversation_id)).toEqual([conv1]);
+    // while in the live conversation, b can still message the friend thread
+    const { error } = await b.client.rpc("submit_message", { p_conversation: tid, p_client_send_id: "f2", p_body: "one sec, in a conversation" });
     expect(error).toBeNull();
-    const { data: r } = await b.client.rpc("respond_invitation", { p_invitation: inv, p_accept: true });
-    expect(r.status).toBe("declined");
-    const { data: active } = await admin().from("participants").select("conversation_id, conversations!participants_conversation_id_fkey!inner(status)").eq("account_id", b.id).is("left_at", null).neq("conversations.status", "ended");
-    expect(active!.map((x) => x.conversation_id)).toEqual([conv1]);
-    // a busy sender cannot even send a Friends invitation
-    const { error: e2 } = await b.client.rpc("request_reconnection", { p_connection: conns![0].connection_id });
-    expect(e2?.message).toMatch(/already in a conversation/);
+    // but cannot join the queue for a second live one
+    const r = await b.client.rpc("join_queue", { p_notify_email: false });
+    expect(r.error?.message).toMatch(/already in a conversation/);
   });
 
-  it("simultaneous acceptances of two invitations for the same person open only one conversation", async () => {
+  it("simultaneous acceptances of two live invitations for the same person open only one conversation, without deadlock, and requeue the other partner", async () => {
     const x = await user("sa-x", LEFT);
     const y = await user("sa-y", RIGHT);
     const z = await user("sa-z", RIGHT);
-    // x is friends with both y and z (two past conversations)
-    for (const f of [y, z]) {
-      const cv = await openConversation(x, f);
-      await x.client.rpc("leave_conversation", { p_conversation: cv });
-      await x.client.rpc("set_connection_decision", { p_conversation: cv, p_decision: true });
-      await f.client.rpc("set_connection_decision", { p_conversation: cv, p_decision: true });
-      await resetQueue();
-    }
-    const { data: ys } = await y.client.rpc("my_connections");
-    const { data: zs } = await z.client.rpc("my_connections");
-    const { data: inv1 } = await y.client.rpc("request_reconnection", { p_connection: ys![0].connection_id });
-    const { data: inv2 } = await z.client.rpc("request_reconnection", { p_connection: zs![0].connection_id });
+    // craft two pending invitations for x (x+y and x+z) as the matcher could under a race
+    const mk = async (other: TestUser) => {
+      await x.client.rpc("join_queue", { p_notify_email: false }); await other.client.rpc("join_queue", { p_notify_email: false });
+      const { data: inv } = await admin().from("match_invitations").insert({ kind: "match", expires_at: new Date(Date.now() + 60_000).toISOString() }).select("id").single();
+      const { data: rx } = await admin().from("availability_requests").select("id").eq("account_id", x.id).in("status", ["waiting", "invited"]).single();
+      const { data: ro } = await admin().from("availability_requests").select("id").eq("account_id", other.id).in("status", ["waiting", "invited"]).single();
+      await admin().from("invitation_participants").insert([{ invitation_id: inv!.id, account_id: x.id, availability_request_id: rx!.id }, { invitation_id: inv!.id, account_id: other.id, availability_request_id: ro!.id }]);
+      await admin().from("availability_requests").update({ status: "invited", matched_invitation_id: inv!.id }).in("id", [rx!.id, ro!.id]);
+      return inv!.id as string;
+    };
+    const inv1 = await mk(y);
+    const inv2 = await mk(z);
+    await y.client.rpc("respond_invitation", { p_invitation: inv1, p_accept: true });
+    await z.client.rpc("respond_invitation", { p_invitation: inv2, p_accept: true });
     const [r1, r2] = await Promise.all([
       x.client.rpc("respond_invitation", { p_invitation: inv1, p_accept: true }),
       x.client.rpc("respond_invitation", { p_invitation: inv2, p_accept: true }),
     ]);
+    expect(r1.error).toBeNull(); expect(r2.error).toBeNull(); // no deadlock / no 500
     const opened = [r1.data, r2.data].filter((d) => d?.status === "opened");
     expect(opened.length).toBe(1);
     const { data: active } = await admin().from("participants").select("conversation_id, conversations!participants_conversation_id_fkey!inner(status)").eq("account_id", x.id).is("left_at", null).neq("conversations.status", "ended");
     expect(active!.length).toBe(1);
+    // the partner of the losing invitation is back to waiting, not stranded as 'invited'
+    const loser = opened[0].conversation_id;
+    const { data: parts } = await admin().from("participants").select("account_id").eq("conversation_id", loser);
+    const other = [y, z].find((u) => !parts!.some((p) => p.account_id === u.id))!;
+    const { data: ro } = await admin().from("availability_requests").select("status, matched_invitation_id").eq("account_id", other.id).order("created_at", { ascending: false }).limit(1).single();
+    expect(ro!.status).toBe("waiting");
+    expect(ro!.matched_invitation_id).toBeNull();
+    const { data: strandedAll } = await admin().from("availability_requests").select("id").eq("status", "invited").in("account_id", [x.id, y.id, z.id]);
+    expect(strandedAll).toEqual([]);
   });
 
-  it("the conversation_opened metric is recorded for both participants", async () => {
+  it("metrics: one live conversation = 2 joins, 2 successful participants, 1 conversation, 100% within 2 min", async () => {
     const a = await user("mt-a", LEFT);
     const b = await user("mt-b", RIGHT);
-    await openConversation(a, b);
-    const { data: ev } = await admin().from("metric_events").select("account_id").eq("kind", "conversation_opened").in("account_id", [a.id, b.id]);
-    expect(new Set(ev!.map((e) => e.account_id))).toEqual(new Set([a.id, b.id]));
+    const since = new Date().toISOString();
+    const conv = await openConversation(a, b);
+    const { data: ev } = await admin().from("metric_events").select("kind, account_id, meta").gte("created_at", since).in("kind", ["queue_join", "conversation_opened", "conversation_started"]);
+    expect(ev!.filter((e) => e.kind === "queue_join").length).toBe(2);
+    expect(new Set(ev!.filter((e) => e.kind === "conversation_opened").map((e) => e.account_id))).toEqual(new Set([a.id, b.id]));
+    const started = ev!.filter((e) => e.kind === "conversation_started");
+    expect(started.length).toBe(1);
+    expect(started[0].meta.conversation_id).toBe(conv);
+    const { data: m } = await admin().rpc("metrics_summary", { p_since: since });
+    expect(m.queue_joins).toBe(2); expect(m.successful_participants).toBe(2); expect(m.conversations_opened).toBe(1); expect(Number(m.started_within_2min_pct)).toBe(100);
+    // a friend thread with messages adds nothing to matching metrics
+    await a.client.rpc("leave_conversation", { p_conversation: conv });
+    await a.client.rpc("set_connection_decision", { p_conversation: conv, p_decision: true });
+    await b.client.rpc("set_connection_decision", { p_conversation: conv, p_decision: true });
+    const { data: conns } = await a.client.rpc("friend_threads_overview");
+    const { data: tid } = await a.client.rpc("open_friend_thread", { p_connection: conns![0].connection_id });
+    await a.client.rpc("submit_message", { p_conversation: tid, p_client_send_id: "m1", p_body: "hi" });
+    await processPendingBatch();
+    const { data: m2 } = await admin().rpc("metrics_summary", { p_since: since });
+    expect(m2.conversations_opened).toBe(1); expect(m2.successful_participants).toBe(2);
   });
+
+  it("friend chat lifecycle: offline delivery, moderation, unread counts, mute consent, retention", async () => {
+    const a = await user("fl-a", LEFT);
+    const b = await user("fl-b", RIGHT);
+    const conv = await openConversation(a, b);
+    await a.client.rpc("leave_conversation", { p_conversation: conv });
+    await a.client.rpc("set_connection_decision", { p_conversation: conv, p_decision: true });
+    await b.client.rpc("set_connection_decision", { p_conversation: conv, p_decision: true });
+    const { data: conns } = await a.client.rpc("friend_threads_overview");
+    const { data: tid } = await a.client.rpc("open_friend_thread", { p_connection: conns![0].connection_id });
+    // a writes while b is "offline" (no heartbeat, no presence); pending is invisible to b and not counted
+    const { data: pid } = await a.client.rpc("submit_message", { p_conversation: tid, p_client_send_id: "fl-1", p_body: "Hope your week got better." });
+    let { data: ov } = await b.client.rpc("friend_threads_overview");
+    expect(ov![0].unread).toBe(0);
+    const { data: bPending } = await b.client.from("pending_messages").select("id").eq("conversation_id", tid);
+    expect(bPending).toEqual([]);
+    await processPendingBatch();
+    ({ data: ov } = await b.client.rpc("friend_threads_overview"));
+    expect(ov![0].unread).toBe(1);
+    const { data: total } = await b.client.rpc("friend_unread_total");
+    expect(total).toBe(1);
+    // a contact detail is held, never delivered, never counted
+    await a.client.rpc("submit_message", { p_conversation: tid, p_client_send_id: "fl-2", p_body: "text me 415-555-0142" });
+    await processPendingBatch();
+    ({ data: ov } = await b.client.rpc("friend_threads_overview"));
+    expect(ov![0].unread).toBe(1);
+    // reading clears; a's own messages never count for a
+    await b.client.rpc("mark_thread_read", { p_conversation: tid });
+    ({ data: ov } = await b.client.rpc("friend_threads_overview"));
+    expect(ov![0].unread).toBe(0);
+    const { data: ovA } = await a.client.rpc("friend_threads_overview");
+    expect(ovA![0].unread).toBe(0);
+    // push consent is separate: no friend_push_enabled → nothing queued even with session reminders on
+    await b.client.from("reminder_prefs").upsert({ account_id: b.id, push_enabled: true, email_enabled: true, mode: "daily" });
+    await a.client.rpc("submit_message", { p_conversation: tid, p_client_send_id: "fl-3", p_body: "another" });
+    await processPendingBatch();
+    let { data: q } = await admin().from("push_queue").select("id").eq("account_id", b.id);
+    expect(q).toEqual([]);
+    await b.client.from("reminder_prefs").update({ friend_push_enabled: true }).eq("account_id", b.id);
+    await a.client.rpc("submit_message", { p_conversation: tid, p_client_send_id: "fl-4", p_body: "and another" });
+    await a.client.rpc("submit_message", { p_conversation: tid, p_client_send_id: "fl-5", p_body: "and one more" });
+    await processPendingBatch();
+    ({ data: q } = await admin().from("push_queue").select("id").eq("account_id", b.id));
+    expect(q!.length).toBe(1); // flood guard: one per thread per 10 minutes
+    // mute stops queueing
+    await admin().from("thread_reads").update({ last_push_at: null }).eq("conversation_id", tid).eq("account_id", b.id);
+    await b.client.rpc("set_thread_muted", { p_conversation: tid, p_muted: true });
+    await a.client.rpc("submit_message", { p_conversation: tid, p_client_send_id: "fl-6", p_body: "muted?" });
+    await processPendingBatch();
+    ({ data: q } = await admin().from("push_queue").select("id").eq("account_id", b.id));
+    expect(q!.length).toBe(1);
+    // retention: friend messages go 30 days after SENDING, thread still open
+    await admin().from("approved_messages").update({ created_at: new Date(Date.now() - 31 * 86400_000).toISOString() }).eq("pending_message_id", pid);
+    const { data: purged } = await admin().rpc("purge_retention");
+    expect(purged.friend_messages).toBeGreaterThanOrEqual(1);
+    const { data: left } = await admin().from("approved_messages").select("pending_message_id").eq("conversation_id", tid);
+    expect(left!.some((m) => m.pending_message_id === pid)).toBe(false);
+    expect(left!.length).toBeGreaterThan(0);
+    const { data: cv } = await admin().from("conversations").select("status").eq("id", tid).single();
+    expect(cv!.status).toBe("chatting");
+    // block: pending message cancelled, thread ended, nothing delivered
+    await b.client.rpc("submit_message", { p_conversation: tid, p_client_send_id: "fl-7", p_body: "about to be blocked" });
+    await a.client.rpc("block_peer", { p_conversation: tid });
+    const { data: p7 } = await admin().from("pending_messages").select("status").eq("client_send_id", "fl-7").single();
+    expect(p7!.status).toBe("cancelled");
+    const { data: cv2 } = await admin().from("conversations").select("status, end_reason").eq("id", tid).single();
+    expect(cv2).toEqual({ status: "ended", end_reason: "blocked" });
+  });
+
+  it("friend threads are untouched by presence and abandonment housekeeping", async () => {
+    const a = await user("fh-a", LEFT);
+    const b = await user("fh-b", RIGHT);
+    const conv = await openConversation(a, b);
+    await a.client.rpc("leave_conversation", { p_conversation: conv });
+    await a.client.rpc("set_connection_decision", { p_conversation: conv, p_decision: true });
+    await b.client.rpc("set_connection_decision", { p_conversation: conv, p_decision: true });
+    const { data: conns } = await a.client.rpc("friend_threads_overview");
+    const { data: tid } = await a.client.rpc("open_friend_thread", { p_connection: conns![0].connection_id });
+    await admin().from("participants").update({ last_seen_at: new Date(Date.now() - 3 * 86400_000).toISOString() }).eq("conversation_id", tid);
+    await admin().rpc("expire_stale");
+    const { data: cv } = await admin().from("conversations").select("status, partner_away_notified_at").eq("id", tid).single();
+    expect(cv).toEqual({ status: "chatting", partner_away_notified_at: null });
+  });
+
 });
 
 describe("stats and badges", () => {

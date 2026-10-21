@@ -64,7 +64,7 @@ export function Lobby(props: {
     setRequest(r);
     type Inv = { invitation_id: string; decision: string | null; match_invitations: { kind: string; expires_at: string } };
     setInvitations(((inv ?? []) as unknown as Inv[]).map((i) => ({ id: i.invitation_id, kind: i.match_invitations.kind, expires_at: i.match_invitations.expires_at, my_decision: i.decision })));
-    const { data: live } = await sb.from("participants").select("conversation_id, conversations!participants_conversation_id_fkey!inner(status)").eq("account_id", props.userId).is("left_at", null).neq("conversations.status", "ended").limit(1);
+    const { data: live } = await sb.from("participants").select("conversation_id, conversations!participants_conversation_id_fkey!inner(status, kind)").eq("account_id", props.userId).is("left_at", null).neq("conversations.status", "ended").eq("conversations.kind", "live").limit(1);
     if (live?.length) router.push(`/c/${live[0].conversation_id}`);
   }, [props.userId, router, inQueue, sync]);
 

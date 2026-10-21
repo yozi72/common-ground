@@ -5,7 +5,7 @@ import type { ScheduleConfig } from "@/lib/schedule";
 import { nextOnlyExpired } from "@/lib/reminder-state";
 import { supabaseBrowser } from "@/lib/supabase/client";
 
-export type ReminderPrefs = { push_enabled: boolean; email_enabled: boolean; mode: "next" | "weekdays" | "daily"; days: number[]; minutes_before: number; next_session_start: string | null };
+export type ReminderPrefs = { push_enabled: boolean; email_enabled: boolean; mode: "next" | "weekdays" | "daily"; days: number[]; minutes_before: number; next_session_start: string | null; friend_push_enabled?: boolean };
 const DAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const IOS_HELP_KEY = "cg-ios-calendar-help-seen";
 
@@ -28,6 +28,10 @@ export function ReminderControls({ initial, schedule, pushAvailable, emailAvaila
   const [nowMs, setNowMs] = useState(0); // set after mount; 0 means "unknown yet" (treated as not expired)
 
   useEffect(() => {
+    const onFocus = () => { if (document.visibilityState === "visible") setNowMs(Date.now()); };
+    document.addEventListener("visibilitychange", onFocus);
+    window.addEventListener("focus", onFocus);
+    const tick = setInterval(() => setNowMs(Date.now()), 60_000);
     const t = setTimeout(() => {
       setNowMs(Date.now());
       setSupport(pushSupport());
@@ -39,7 +43,7 @@ export function ReminderControls({ initial, schedule, pushAvailable, emailAvaila
         setThisDevice(!!data?.length);
       }).catch(() => setThisDevice(false));
     }, 0);
-    return () => clearTimeout(t);
+    return () => { clearTimeout(t); clearInterval(tick); document.removeEventListener("visibilitychange", onFocus); window.removeEventListener("focus", onFocus); };
   }, []);
 
   const expired = nowMs > 0 && nextOnlyExpired(saved, nowMs);
@@ -51,10 +55,12 @@ export function ReminderControls({ initial, schedule, pushAvailable, emailAvaila
     const res = await fetch("/api/reminders", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     setBusy(false);
     if (!res.ok) { setMsg({ kind: "bad", text: (await res.json().catch(() => ({}))).error ?? "Couldn't save" }); return; }
-    const next = { ...draft, next_session_start: body.next_session_start };
+    const json = await res.json().catch(() => ({}));
+    const next = { ...draft, next_session_start: (json.next_session_start as string | null) ?? null };
     setSaved(next); setDraft(next);
     const on = [draft.email_enabled && "email", draft.push_enabled && "phone"].filter(Boolean) as string[];
-    const when = draft.mode === "next" ? "for the next session" : draft.mode === "weekdays" ? "on your selected days" : "for every session";
+    const nextLabel = next.next_session_start ? new Date(next.next_session_start).toLocaleString([], { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "the next session";
+    const when = draft.mode === "next" ? `for ${nextLabel}` : draft.mode === "weekdays" ? "on your selected days" : "for every session";
     setMsg({ kind: "ok", text: on.length === 0 ? "Email and phone reminders are off." : `${on.map((s) => s[0].toUpperCase() + s.slice(1)).join(" and ")} reminders saved ${when}, 10 minutes before.` });
   }
 
@@ -82,8 +88,10 @@ export function ReminderControls({ initial, schedule, pushAvailable, emailAvaila
   const icsHref = `/api/calendar?${calendarQuery}`;
   const calendarDays = draft.mode === "weekdays" ? draft.days.filter((d) => schedule.days.includes(d)) : schedule.days;
   const calendarReady = calendarDays.length > 0;
+  const guardCalendar = (e: React.MouseEvent | React.KeyboardEvent) => { if (!calendarReady) { e.preventDefault(); setMsg({ kind: "warn", text: "Pick at least one day before adding a calendar event." }); } };
 
   function onAppleCalendar(e: React.MouseEvent<HTMLAnchorElement>) {
+    if (!calendarReady) { guardCalendar(e); return; }
     if (!isIOS) return; // Mac/other: the .ics opens directly
     let seen = false;
     try { seen = localStorage.getItem(IOS_HELP_KEY) === "1"; } catch {}
@@ -152,7 +160,8 @@ export function ReminderControls({ initial, schedule, pushAvailable, emailAvaila
 
         {expired && <p className="notice notice-warn text-sm" role="status">Your &ldquo;next session only&rdquo; reminder was for a session that has passed. Save again to be reminded about the next one{nextSessionStartIso ? "" : " (no upcoming session is scheduled)"}.</p>}
         <div className="flex items-center gap-3 flex-wrap">
-          <button type="button" className="btn btn-primary" disabled={busy || !dirty} onClick={savePrefs}>{expired ? "Save for the next session" : "Save reminder preferences"}</button>
+          <button type="button" className="btn btn-primary" disabled={busy || !dirty || (draft.mode === "weekdays" && draft.days.length === 0)} onClick={savePrefs}>{expired ? "Save for the next session" : "Save reminder preferences"}</button>
+          {draft.mode === "weekdays" && draft.days.length === 0 && <span className="text-xs" style={{ color: "var(--warn-fg)" }}>Pick at least one day.</span>}
           {saved && !dirty && <span className="muted text-xs">Saved{saved.email_enabled || saved.push_enabled ? "" : " (email and phone reminders are off)"}.</span>}
         </div>
         {msg && <p className={`notice ${msg.kind === "ok" ? "notice-ok" : msg.kind === "warn" ? "notice-warn" : "notice-bad"} text-sm`} role="status">{msg.text}</p>}
@@ -168,8 +177,8 @@ export function ReminderControls({ initial, schedule, pushAvailable, emailAvaila
           <>
             {!calendarReady && <p className="notice notice-warn text-sm">Pick at least one day above to add a calendar event.</p>}
             <div className="flex flex-wrap gap-2">
-              <a className="btn btn-primary" href={icsHref} onClick={onAppleCalendar} aria-disabled={!calendarReady} style={!calendarReady ? { pointerEvents: "none", opacity: 0.5 } : undefined}>Add to Apple Calendar</a>
-              <a className="btn btn-secondary" href={`${icsHref}&google=1`} target="_blank" rel="noopener" aria-disabled={!calendarReady} style={!calendarReady ? { pointerEvents: "none", opacity: 0.5 } : undefined}>Add to Google Calendar</a>
+              <a className="btn btn-primary" href={calendarReady ? icsHref : undefined} role="button" tabIndex={0} onClick={onAppleCalendar} onKeyDown={(e) => { if (!calendarReady && (e.key === "Enter" || e.key === " ")) guardCalendar(e); }} aria-disabled={!calendarReady} style={!calendarReady ? { opacity: 0.5 } : undefined}>Add to Apple Calendar</a>
+              <a className="btn btn-secondary" href={calendarReady ? `${icsHref}&google=1` : undefined} role="button" tabIndex={0} target={calendarReady ? "_blank" : undefined} rel="noopener" onClick={guardCalendar} onKeyDown={(e) => { if (!calendarReady && (e.key === "Enter" || e.key === " ")) guardCalendar(e); }} aria-disabled={!calendarReady} style={!calendarReady ? { opacity: 0.5 } : undefined}>Add to Google Calendar</a>
             </div>
             <p className="muted text-xs">
               {calendarReady ? <a className="underline" href={icsHref} download>Other calendars (.ics)</a> : <span>Other calendars (.ics)</span>}

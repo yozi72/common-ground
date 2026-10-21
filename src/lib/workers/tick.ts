@@ -5,6 +5,7 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { processPendingBatch, advanceAfterReveal } from "./moderation";
 import { sendQueuedEmails } from "./email";
 import { sendDueReminders } from "./reminders";
+import { sendFriendMessagePushes } from "./friend-push";
 import { generateNextQuestion } from "./questions";
 
 export async function runTick(opts: { retention?: boolean; source?: string } = {}) {
@@ -33,6 +34,7 @@ export async function runTick(opts: { retention?: boolean; source?: string } = {
   try { out.moderation = await processPendingBatch(20); } catch (e) { out.moderation = { error: (e as Error).message }; }
   try { out.email = await sendQueuedEmails(); } catch (e) { out.email = { error: (e as Error).message }; }
   try { out.reminders = await sendDueReminders(); } catch (e) { out.reminders = { error: (e as Error).message }; }
+  try { out.friendPush = await sendFriendMessagePushes(); } catch (e) { out.friendPush = { error: (e as Error).message }; }
 
   if (opts.retention) {
     const { data, error } = await admin.rpc("purge_retention");

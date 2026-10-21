@@ -8,6 +8,6 @@ export default async function ConnectionsPage() {
   const supabase = await createSupabaseServerClient();
   const { data: auth } = await supabase.auth.getUser();
   if (!auth.user) redirect("/login");
-  const { data } = await supabase.rpc("my_connections");
+  const { data } = await supabase.rpc("friend_threads_overview");
   return <Connections initial={(data ?? []) as never} />;
 }

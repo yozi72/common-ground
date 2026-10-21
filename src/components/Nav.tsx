@@ -9,9 +9,11 @@ export async function Nav() {
   const supabase = await createSupabaseServerClient();
   const { data } = await supabase.auth.getUser();
   let isAdmin = false;
+  let unread = 0;
   if (data.user) {
-    const { data: a } = await supabase.rpc("is_admin");
+    const [{ data: a }, { data: u }] = await Promise.all([supabase.rpc("is_admin"), supabase.rpc("friend_unread_total")]);
     isAdmin = !!a;
+    unread = typeof u === "number" ? u : 0;
   }
   return (
     <>
@@ -25,7 +27,7 @@ export async function Nav() {
             {data.user ? (
               <>
                 <li className="hidden sm:block"><Link className="btn btn-ghost px-3 py-2 min-h-0" href="/lobby">Talk</Link></li>
-                <li className="hidden sm:block"><Link className="btn btn-ghost px-3 py-2 min-h-0" href="/connections">Friends</Link></li>
+                <li className="hidden sm:block"><Link className="btn btn-ghost px-3 py-2 min-h-0" href="/connections">Friends{unread > 0 && <span className="count" aria-label={`${unread} unread`}>{unread}</span>}</Link></li>
                 <li className="hidden sm:block"><Link className="btn btn-ghost px-3 py-2 min-h-0" href="/settings">Profile</Link></li>
                 {isAdmin && <li className="hidden sm:block"><Link className="btn btn-ghost px-3 py-2 min-h-0" href="/admin">Review</Link></li>}
                 <li><SignOutButton /></li>
@@ -36,7 +38,7 @@ export async function Nav() {
           </ul>
         </nav>
       </header>
-      {data.user && <TabBar isAdmin={isAdmin} />}
+      {data.user && <TabBar isAdmin={isAdmin} unread={unread} />}
     </>
   );
 }

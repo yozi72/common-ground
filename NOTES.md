@@ -1,7 +1,7 @@
 # NOTES.md — running notes (updated after every change)
 
 ## Current goal
-Pilot is live at https://common-ground-dusky-nine.vercel.app (commit d2f5eb9). Waiting on the user's real-device push-notification test, and on whatever they pick up next.
+Friends-as-persistent-chats change built and tested (84 tests); being committed, migrated (0008, 0009) and deployed. Then waiting on the user's real-device tests (push, friend chat on two devices).
 
 ## Decisions (with reasoning)
 - **Supabase + Next.js, local-first:** RLS gives per-row access checks; everything mutating goes through RPCs so race safety lives in SQL.
@@ -15,6 +15,7 @@ Pilot is live at https://common-ground-dusky-nine.vercel.app (commit d2f5eb9). W
 - **Admins skip onboarding and land on Review;** they can opt in to participate.
 
 ## Done
+- 2026-10-20 (friend chats): migration `0008_friend_threads.sql` (`conversations.kind`, `last_message_at`, `thread_reads`, `push_queue`, `reminder_prefs.friend_push_enabled`; RPCs `open_friend_thread`, `mark_thread_read`, `set_thread_muted`, `remove_friend`, `friend_threads_overview`, `friend_unread_total`, `can_request_question`, `claim_push_queue`; live-only `has_active_conversation`; `submit_message`/`apply_moderation_decision` friend branches with neutral push + 10-min flood guard; `block_peer` ends threads; `purge_retention` per-message 30 days; `metrics_summary` adds `successful_participants`/`conversations_opened`; queue repair in `join_queue`/`leave_queue`/`open_conversation_for_invitation`/`expire_stale`; drops `request_reconnection`, expires legacy reconnect invitations) and `0009_acceptance_locking.sql` (`respond_invitation` takes sorted per-account advisory locks before the invitation row lock; fixes deadlock 40P01 found by the concurrency test). Worker `src/lib/workers/friend-push.ts` (called from `tick.ts`). API: `connections/[id]` (open/remove), `conversations/[id]` (read/mute/question/remove_friend), `reminders` (friend_push_enabled; weekdays require days; `next` target via `pickNextReminderSession`), `calendar` (`parseDaysParam`). UI: `Connections.tsx` (unread/muted badges, Message/Open chat/Read & reply, remove confirmation), `Nav`/`TabBar` unread badge, `Conversation.tsx` friend mode (no progress bar/heartbeat, mute/remove menu, "Give us a question"), `page.tsx` marks read, `FriendPushSetting.tsx`, `ReminderControls.tsx` (nowMs refresh, save guard, real session date), `onboarding/page.tsx` load error + retry, `Lobby`/`lobby/page.tsx` live-only lookup. Tests: `tests/pilot.test.ts` friend lifecycle/concurrency/metrics/queue repair, `tests/reminder-next.test.ts`. Docs: HANDOFF, README, CLAUDE (live vs friend). Why: user spec turning Friends into persistent chats and fixing the stranded-queue bug. 84 tests.
 - 2026-10-20 (third review): `src/lib/push-endpoint.ts` allowlist + SQL `is_allowed_push_endpoint` + send-time check (`reminders.ts`); migration `0007_review3_fixes.sql` (one active conversation per person via `has_active_conversation` + per-account advisory locks in `open_conversation_for_invitation`, Friends sender must be free, `conversation_opened` metric for both); `calendar.ts` `firstSession`/`effectiveDays` (next selected day, selection required, API 400); `reminder-state.ts` expiry + renewal UI; onboarding prefill from saved profile; `SignOutButton` unsubscribes push before sign-out; device-account check in `ReminderControls`; sign-in copy mentions reminders. Why: ChatGPT review of c64acf8. 79 tests.
 - 2026-10-20 (later): Reminder setup rework — `src/components/ReminderControls.tsx` (draft + explicit Save; email default ON for first-time, opt-out persisted; Apple/Google buttons + "Other calendars (.ics)"; iOS-only pre-preview help panel with `localStorage` key `cg-ios-calendar-help-seen` and "Need help adding it?"; no false "added" messages), `src/lib/unsubscribe.ts` + `src/app/api/reminders/unsubscribe/route.ts` (HMAC one-click unsubscribe, public path in `proxy.ts`), unsubscribe link in `src/lib/workers/reminders.ts`, `isIOSDevice()` in `src/lib/push-client.ts`. Why: user tapped the iOS checkmark instead of "Add To Calendar"; reviewer asked for default-on email and clearer activation.
 - Full pilot: schema (migrations 0001–0006), moderation pipeline, matching, chat, reflection, friends, admin console, deletion, retention.
@@ -25,9 +26,10 @@ Pilot is live at https://common-ground-dusky-nine.vercel.app (commit d2f5eb9). W
 - 69 automated tests; live two-user run on the deployed app (before v2).
 
 ## In progress
-- Nothing mid-edit. All work committed and pushed (d2f5eb9), hosted migration applied, deployed.
+- Friend-chat change: code complete, tests green, docs updated; commit/push, `supabase db push` (0008, 0009) and Vercel deploy in progress (see Current goal). Nothing else mid-edit.
 
 ## Next steps
+- User to test the friend chat on two real devices (offline delivery, unread badge, friend-message push after opting in under Profile).
 - User to test push on a real phone: calendar export verified on iPhone; push still needs Add to Home Screen → open from the icon → Enable phone notifications.
 - Domain + Resend to replace Gmail SMTP.
 - A real two-user run during a live 6 pm Pacific session.
@@ -40,6 +42,8 @@ Pilot is live at https://common-ground-dusky-nine.vercel.app (commit d2f5eb9). W
 - Reviewer coverage: held messages wait for the single admin.
 
 ## Gotchas
+- Dev server staleness: after editing a client component that a server component imports (e.g. `TabBar` from `Nav`), the SSR bundle can stay stale and the console shows a hydration mismatch that isn't in the code; restart `npm run dev` (via the browser pane's `web` launch config) before chasing it. Never run `next build` while `next dev` is running: it overwrites `.next` under the dev server.
+- `read_console_messages` in the browser pane keeps old errors across reloads; judge by whether the count grows, or by the Next overlay badge.
 - Test fixtures must use allowlisted push endpoints (e.g. `https://fcm.googleapis.com/fcm/send/test-…`); `push.invalid` is now rejected by the DB.
 - iOS calendar preview: the top-right check mark closes without saving; only the bottom "Add To Calendar" button saves. A hint was added under the calendar buttons (`src/components/ReminderControls.tsx`) after the user's real-device test (2026-10-20). The .ics itself rendered correctly on iPhone (18:00–19:00, repeats daily, 10-min alert, link).
 - `.env.local` is git-ignored; hosted keys live in `.vercel/hosted.env.local` and the prod cron secret in `.vercel/cron-secret.local` (both ignored). Vercel env: `--type config` for plain values; secrets default.
