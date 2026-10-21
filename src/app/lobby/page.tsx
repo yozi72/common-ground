@@ -35,14 +35,17 @@ export default async function LobbyPage() {
     .eq("account_id", auth.user.id).is("left_at", null).neq("conversations.status", "ended").eq("conversations.kind", "live").limit(1);
   if (live?.length) redirect(`/c/${live[0].conversation_id}`);
 
-  const [{ data: request }, { data: invitations }, { data: profile }, { data: prefs }, schedule] = await Promise.all([
+  const [{ data: request }, { data: invitations }, { data: profile }, { data: prefs }, schedule, { data: recent }] = await Promise.all([
     supabase.from("availability_requests").select("id, status, expires_at, notify_email, created_at, paused_reason, broaden, session_start").in("status", ["waiting", "invited"]).maybeSingle(),
     supabase.from("invitation_participants").select("invitation_id, decision, match_invitations!inner(id, kind, status, expires_at, conversation_id)")
       .eq("account_id", auth.user.id).eq("match_invitations.status", "pending"),
     supabase.from("profiles").select("timezone_override, political_answers").eq("account_id", auth.user.id).maybeSingle(),
     supabase.from("reminder_prefs").select("push_enabled, email_enabled, mode, days, minutes_before, next_session_start").eq("account_id", auth.user.id).maybeSingle(),
     getScheduleConfig(),
+    supabase.rpc("my_recent_conversations"),
   ]);
+  // ended conversations whose keep-talking decision is still open (reachable from Chats; nudged here)
+  const undecided = ((recent ?? []) as { conversation_id: string; peer_alias: string; my_decision: boolean | null; both_yes: boolean }[]).filter((r) => r.my_decision === null && !r.both_yes).map((r) => ({ conversation_id: r.conversation_id, peer_alias: r.peer_alias }));
 
   type Inv = { invitation_id: string; decision: string | null; match_invitations: { id: string; kind: string; status: string; expires_at: string; conversation_id: string | null } };
   const invs = ((invitations ?? []) as unknown as Inv[]).map((i) => ({ id: i.invitation_id, kind: i.match_invitations.kind, expires_at: i.match_invitations.expires_at, my_decision: i.decision }));
@@ -58,6 +61,7 @@ export default async function LobbyPage() {
       vapidKey={process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY ?? null}
       schedule={schedule}
       initialSession={sessionState(now, schedule)}
+      undecided={undecided}
       serverNow={now}
       timezoneOverride={profile?.timezone_override ?? null}
       reminderPrefs={(prefs as never) ?? null}

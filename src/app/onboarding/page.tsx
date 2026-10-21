@@ -100,7 +100,7 @@ export default function Onboarding() {
           <label className="option flex gap-3 items-start cursor-pointer" aria-pressed={terms}>
             <input type="checkbox" className="mt-1 h-6 w-6 shrink-0 accent-[var(--accent)]" checked={terms} onChange={(e) => setTerms(e.target.checked)} />
             <span className="text-base font-normal">
-              I get that this is a pilot: my messages are checked before delivery, I&apos;ll have a random alias, and contact details can&apos;t be shared.{" "}
+              I get that this is a pilot: my messages are checked before delivery, I&apos;ll have a random alias, and contact details can&apos;t be shared until two people choose to become friends.{" "}
               <a className="underline" href="/privacy" target="_blank">Details</a>
             </span>
           </label>

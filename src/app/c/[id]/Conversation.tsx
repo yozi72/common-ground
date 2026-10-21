@@ -11,6 +11,7 @@ type Conv = { id: string; status: "opening" | "chatting" | "ended"; opening_ques
 type Question = { id: string; seq: number; phase: "opening" | "mid"; question_text: string; choices: string[]; status: "open" | "revealed" | "closed"; created_at: string; revealed_at: string | null };
 type Answer = { question_id: string; participant_id: string; choice_index: number | null; custom_text: string | null; status: string };
 type Msg = { id: string; sender_participant_id: string; kind: "chat" | "answer"; body: string; created_at: string };
+type ThreadState = { tier?: "chat" | "friend"; request_from_me?: boolean; request_for_me?: boolean; request_available?: boolean; status?: string; connection_id?: string };
 type Pending = { id: string; client_send_id: string; kind: "chat" | "answer"; question_id: string | null; body: string; status: string; user_explanation: string | null; suggested_revision: string | null; created_at: string; attempts: number };
 
 const PENDING_CANCEL_AFTER_MS = 45_000;
@@ -36,7 +37,8 @@ export function Conversation({ conversationId, myParticipantId, myAlias, peerAli
   const [error, setError] = useState<string | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [reporting, setReporting] = useState(false);
-  const [confirming, setConfirming] = useState<"leave" | "block" | "unfriend" | null>(null);
+  const [confirming, setConfirming] = useState<"leave" | "block" | "unfriend" | "clear" | "friend_request" | null>(null);
+  const [thread, setThread] = useState<ThreadState>({});
   const [muted, setMuted] = useState(initialMuted);
   const isFriend = kind === "friend";
   const [now, setNow] = useState(0);
@@ -44,15 +46,17 @@ export function Conversation({ conversationId, myParticipantId, myAlias, peerAli
 
   const load = useCallback(async () => {
     const sb = supabaseBrowser();
-    const [c, q, a, m, p, n] = await Promise.all([
+    const [c, q, a, m, p, n, ts] = await Promise.all([
       sb.from("conversations").select("id, status, opening_question_count, questions_asked, end_reason, kind").eq("id", conversationId).maybeSingle(),
       sb.from("conversation_questions").select("id, seq, phase, question_text, choices, status, created_at, revealed_at").eq("conversation_id", conversationId).order("seq"),
       sb.from("question_answers").select("question_id, participant_id, choice_index, custom_text, status").eq("conversation_id", conversationId),
       latestMessages(sb, conversationId, PAGE),
       actionablePending(sb, conversationId),   // only records that still need me (cancel / revise / appeal)
       sb.from("notifications").select("id").eq("kind", "partner_away").contains("payload", { conversation_id: conversationId }).limit(1),
+      kind === "friend" ? sb.rpc("thread_state", { p_conversation: conversationId }) : Promise.resolve({ data: null, error: null }),
     ]);
     if (c.data) setConv(c.data as Conv);
+    if (ts.data) setThread(ts.data as ThreadState);
     setQuestions((q.data ?? []) as Question[]);
     setAnswers((a.data ?? []) as Answer[]);
     const latest = ((m.data ?? []) as Msg[]).slice().reverse();
@@ -90,7 +94,7 @@ export function Conversation({ conversationId, myParticipantId, myAlias, peerAli
         .then((res) => { lastReadSent.current = readMarkAfter(mark, res.ok); if (res.ok) window.dispatchEvent(new Event(UNREAD_CHANGED)); })
         .catch(() => { lastReadSent.current = readMarkAfter(mark, false); });
     }
-  }, [conversationId, router, setMessages]);
+  }, [conversationId, router, setMessages, kind]);
 
   // History outside the newest page can't be proven present by a limited query, so
   // its ids are re-checked on reconnect and every minute: anything the server no
@@ -201,8 +205,8 @@ export function Conversation({ conversationId, myParticipantId, myAlias, peerAli
             <Avatar alias={peerAlias} />
           </div>
           <div className="min-w-0">
-            <h1 className="text-xl font-semibold truncate">{isFriend ? `Friend chat · ${peerAlias}` : `You & ${peerAlias}`}</h1>
-            <p className="muted text-xs">You're {myAlias}. {isFriend ? (conv.status === "ended" ? "This friendship has ended; history only." : muted ? "Muted · messages are checked before delivery · deleted 30 days after sending" : "Messages are checked before delivery · deleted 30 days after sending") : conv.status === "opening" ? `Question ${Math.min(conv.questions_asked, conv.opening_question_count)} of ${conv.opening_question_count}` : "Open conversation"}</p>
+            <h1 className="text-xl font-semibold truncate">{isFriend ? `${thread.tier === "friend" ? "Friends" : "Chat"} · ${peerAlias}` : `You & ${peerAlias}`}</h1>
+            <p className="muted text-xs">You're {myAlias}. {isFriend ? (conv.status === "ended" ? "This chat has ended; history only, deleted 30 days after it ended." : thread.tier === "friend" ? `${muted ? "Muted · " : ""}You're friends: contact details can be shared here · still checked for abuse` : `${muted ? "Muted · " : ""}Messages are checked before delivery · no contact details until you're both friends`) : conv.status === "opening" ? `Question ${Math.min(conv.questions_asked, conv.opening_question_count)} of ${conv.opening_question_count}` : "Open conversation"}</p>
             {peerBadges.length > 0 && (
               <ul className="flex flex-wrap gap-1 mt-1" aria-label={`About ${peerAlias}`}>
                 {peerBadges.map((b) => <li key={b} className="badge">{b}</li>)}
@@ -219,7 +223,9 @@ export function Conversation({ conversationId, myParticipantId, myAlias, peerAli
               {isFriend ? (
                 <>
                   {conv.status !== "ended" && <li><button role="menuitem" className="btn btn-ghost w-full justify-start" onClick={async () => { setMenuOpen(false); const r = await api(`/api/conversations/${conversationId}`, { action: "mute", muted: !muted }); if (r) setMuted(!muted); }}>{muted ? "Unmute notifications" : "Mute notifications"}</button></li>}
-                  {conv.status !== "ended" && <li><button role="menuitem" className="btn btn-ghost w-full justify-start" onClick={() => { setMenuOpen(false); setConfirming("unfriend"); }}>Remove friend</button></li>}
+                  {conv.status !== "ended" && thread.request_available && <li><button role="menuitem" className="btn btn-ghost w-full justify-start" onClick={() => { setMenuOpen(false); setConfirming("friend_request"); }}>Become friends</button></li>}
+                  {conv.status !== "ended" && <li><button role="menuitem" className="btn btn-ghost w-full justify-start" onClick={() => { setMenuOpen(false); setConfirming("clear"); }}>Delete chat history</button></li>}
+                  {conv.status !== "ended" && <li><button role="menuitem" className="btn btn-ghost w-full justify-start" onClick={() => { setMenuOpen(false); setConfirming("unfriend"); }}>End this chat</button></li>}
                 </>
               ) : (
                 <li><button role="menuitem" className="btn btn-ghost w-full justify-start" onClick={() => { setMenuOpen(false); setConfirming("leave"); }}>Leave conversation</button></li>
@@ -241,16 +247,37 @@ export function Conversation({ conversationId, myParticipantId, myAlias, peerAli
       {error && <div className="notice notice-bad" role="alert">{error}</div>}
       {partnerAway && <div className="notice notice-warn" role="status">{peerAlias} hasn't been active for a couple of minutes. They may have stepped away.</div>}
 
+      {isFriend && conv.status !== "ended" && thread.request_for_me && (
+        <section className="card space-y-3" style={{ borderColor: "var(--accent)" }} aria-live="polite">
+          <h2 className="font-semibold">{peerAlias} would like to become friends</h2>
+          <p className="muted text-sm">Accepting lets you both share names and contact details in this chat. Messages are still checked for abuse, but once something is shared the app can't protect it. Saying not now is private; they aren't told.</p>
+          <div className="flex gap-2">
+            <button className="btn btn-primary" onClick={async () => { const r = await api(`/api/conversations/${conversationId}`, { action: "friend_respond", connection_id: connectionId, accept: true }); if (r) await load(); }}>Accept</button>
+            <button className="btn btn-secondary" onClick={async () => { const r = await api(`/api/conversations/${conversationId}`, { action: "friend_respond", connection_id: connectionId, accept: false }); if (r) await load(); }}>Not now</button>
+          </div>
+        </section>
+      )}
+      {isFriend && conv.status !== "ended" && thread.request_from_me && (
+        <p className="notice text-sm" role="status">You asked {peerAlias} to become friends. They'll see your request in this chat.</p>
+      )}
+      {isFriend && conv.status !== "ended" && thread.request_available && !thread.request_for_me && timeline.length > 0 && (
+        <div className="flex justify-center">
+          <button className="btn btn-secondary text-sm" onClick={() => setConfirming("friend_request")}>Become friends</button>
+        </div>
+      )}
+
       {confirming && (
         <section className="card space-y-3" role="alertdialog" aria-labelledby="confirm-title">
-          <h2 id="confirm-title" className="font-medium">{confirming === "block" ? "Block this person and end the conversation?" : confirming === "unfriend" ? `Remove ${peerAlias} as a friend?` : "End this conversation?"}</h2>
-          <p className="muted text-sm">{confirming === "block" ? "You won't be matched with them again, and they won't be told who blocked them. This can't be undone." : confirming === "unfriend" ? "Messaging stops for both of you. What's here stays readable until it expires. Reconnecting later takes both of you agreeing again (from the reflection of a shared conversation)." : `${peerAlias} will be told the conversation ended. You'll both get a chance to reflect.`}</p>
+          <h2 id="confirm-title" className="font-medium">{confirming === "block" ? "Block this person and end the conversation?" : confirming === "unfriend" ? `End this chat with ${peerAlias}?` : confirming === "clear" ? "Delete this chat's history?" : confirming === "friend_request" ? `Ask ${peerAlias} to become friends?` : "End this conversation?"}</h2>
+          <p className="muted text-sm">{confirming === "block" ? "You won't be matched with them again, and they won't be told who blocked them. This can't be undone." : confirming === "unfriend" ? "Messaging stops for both of you. What's here stays readable for 30 days, then it's deleted. Chatting again later takes both of you agreeing again, from the reflection of a shared conversation, and starts over without contact sharing." : confirming === "clear" ? "Every message in this chat is deleted for both of you, right away. The chat itself stays open. This can't be undone." : confirming === "friend_request" ? "They'll see your request and can accept or say not now. If they accept, you can both share names and contact details in this chat. Messages are still checked for abuse, but once you share something the app can't take it back. One request per week." : `${peerAlias} will be told the conversation ended. You'll both get a chance to reflect.`}</p>
           <div className="flex gap-2">
-            <button className={confirming === "leave" ? "btn btn-primary" : "btn btn-danger"} onClick={async () => {
+            <button className={confirming === "leave" || confirming === "friend_request" ? "btn btn-primary" : "btn btn-danger"} onClick={async () => {
               if (confirming === "unfriend") { const r = await api(`/api/conversations/${conversationId}`, { action: "remove_friend", connection_id: connectionId }); if (r) { setConfirming(null); await load(); } return; }
+              if (confirming === "clear") { const r = await api(`/api/conversations/${conversationId}`, { action: "clear_history" }); if (r) { setConfirming(null); setMessages([]); await load(); } return; }
+              if (confirming === "friend_request") { const r = await api(`/api/conversations/${conversationId}`, { action: "friend_request", connection_id: connectionId }); if (r) { setConfirming(null); await load(); } return; }
               const r = await api(`/api/conversations/${conversationId}`, { action: confirming }); if (r) router.push(isFriend ? "/connections" : `/c/${conversationId}/reflect`);
-            }}>{confirming === "block" ? "Block and end" : confirming === "unfriend" ? "Remove friend" : "End conversation"}</button>
-            <button className="btn btn-secondary" onClick={() => setConfirming(null)}>Keep talking</button>
+            }}>{confirming === "block" ? "Block and end" : confirming === "unfriend" ? "End chat" : confirming === "clear" ? "Delete history" : confirming === "friend_request" ? "Send request" : "End conversation"}</button>
+            <button className="btn btn-secondary" onClick={() => setConfirming(null)}>{confirming === "friend_request" ? "Not now" : "Keep talking"}</button>
           </div>
         </section>
       )}
@@ -269,7 +296,7 @@ export function Conversation({ conversationId, myParticipantId, myAlias, peerAli
             {isFriend ? (
               <>
                 <p className="font-semibold">Say hello whenever you like</p>
-                <p className="muted text-sm max-w-sm mx-auto">{peerAlias} doesn&apos;t need to be online; they&apos;ll see it when they&apos;re back. Want a shared question to get going? Use &ldquo;Give us a question&rdquo; below.</p>
+                <p className="muted text-sm max-w-sm mx-auto">{peerAlias} doesn&apos;t need to be online; they&apos;ll see it when they&apos;re back. Messages are still checked, and contact details stay held back until you both choose to become friends. Want a shared question to get going? Use &ldquo;Give us a question&rdquo; below.</p>
               </>
             ) : openQuestion ? (
               <>
@@ -297,7 +324,7 @@ export function Conversation({ conversationId, myParticipantId, myAlias, peerAli
       )}
 
       {isFriend && conv.status === "ended" && (
-        <p className="notice notice-warn text-sm" role="status">{conv.end_reason === "blocked" ? "This conversation was ended with a block." : "This friendship has ended. No new messages can be sent; what's here stays readable until it expires."}</p>
+        <p className="notice notice-warn text-sm" role="status">{conv.end_reason === "blocked" ? "This conversation was ended with a block." : "This chat has ended. No new messages can be sent; what's here stays readable for 30 days."}</p>
       )}
       {isFriend && conv.status !== "ended" && !openQuestion && (
         <div className="flex justify-center">

@@ -26,7 +26,7 @@ export default async function Home() {
           { t: "You stay anonymous", d: "You appear as a random alias like “Quiet Heron”. Your email is never shown to anyone you talk with.", art: <Lantern className="w-24 h-auto" /> },
           { t: "Different, on purpose", d: "A short questionnaire helps us find someone whose perspectives differ from yours. Your questionnaire answers stay private—we don’t reveal each other’s responses.", art: <Bridge className="w-24 h-auto" /> },
           { t: "Same questions, both of you", d: "Ten shared questions to start. Answers stay hidden until you've both responded. Then open chat, with a new question now and then.", art: <TwoCups className="w-24 h-auto" /> },
-          { t: "Checked before delivery", d: "Every message is reviewed before the other person sees it, including for contact details. It adds a short pause, and it isn't perfect.", art: <Sprout className="w-24 h-auto" /> },
+          { t: "Checked before delivery", d: "Every message is reviewed before the other person sees it, including for contact details until you both choose to become friends. It adds a short pause, and it isn't perfect.", art: <Sprout className="w-24 h-auto" /> },
         ].map(({ t, d, art }) => (
           <div key={t} className="card flex gap-4 items-start">
             <div className="shrink-0">{art}</div>

@@ -978,13 +978,11 @@ describe("third review regressions (2026-10-20)", () => {
     await processPendingBatch();
     ({ data: q } = await admin().from("push_queue").select("id").eq("account_id", b.id));
     expect(q!.length).toBe(1);
-    // retention: friend messages go 30 days after SENDING, thread still open
+    // retention: chat history is kept while the chat is open, however old (changed 2026-10-21)
     await admin().from("approved_messages").update({ created_at: new Date(Date.now() - 31 * 86400_000).toISOString() }).eq("pending_message_id", pid);
-    const { data: purged } = await admin().rpc("purge_retention");
-    expect(purged.friend_messages).toBeGreaterThanOrEqual(1);
+    await admin().rpc("purge_retention");
     const { data: left } = await admin().from("approved_messages").select("pending_message_id").eq("conversation_id", tid);
-    expect(left!.some((m) => m.pending_message_id === pid)).toBe(false);
-    expect(left!.length).toBeGreaterThan(0);
+    expect(left!.some((m) => m.pending_message_id === pid)).toBe(true);
     const { data: cv } = await admin().from("conversations").select("status").eq("id", tid).single();
     expect(cv!.status).toBe("chatting");
     // block: pending message cancelled, thread ended, nothing delivered
@@ -1757,5 +1755,148 @@ describe("audit regressions (2026-10-21)", () => {
     const { data: o } = await admin().from("email_outbox").select("status").eq("account_id", a.id);
     expect(o!.map((x) => x.status)).toEqual(["queued"]);   // queued work is never purged
     await admin().from("availability_requests").delete().eq("account_id", a.id);
+  });
+});
+
+describe("chats with two tiers (2026-10-21)", () => {
+  async function keepTalking(tagA: string, tagB: string) {
+    const a = await user(tagA, LEFT);
+    const b = await user(tagB, RIGHT);
+    const conv = await openConversation(a, b);
+    await finishOpeningRound(a, b, conv, generateNextQuestion);
+    await a.client.rpc("leave_conversation", { p_conversation: conv });
+    await a.client.rpc("set_connection_decision", { p_conversation: conv, p_decision: true });
+    await b.client.rpc("set_connection_decision", { p_conversation: conv, p_decision: true });
+    const { data: conns } = await a.client.rpc("friend_threads_overview");
+    const { data: tid } = await a.client.rpc("open_friend_thread", { p_connection: conns![0].connection_id });
+    return { a, b, conv, connectionId: conns![0].connection_id as string, tid: tid as string };
+  }
+  const overview = async (u: TestUser) => (await u.client.rpc("friend_threads_overview")).data![0];
+
+  it("become friends: a visible request the other person accepts; both consents recorded; idempotent", async () => {
+    const { a, b, connectionId } = await keepTalking("bf-a", "bf-b");
+    expect(await overview(a)).toMatchObject({ tier: "chat", request_available: true, request_from_me: false, request_for_me: false });
+    const { data: r1 } = await a.client.rpc("request_friend", { p_connection: connectionId });
+    expect(r1).toBe("pending");
+    expect(await overview(a)).toMatchObject({ request_from_me: true, request_available: false });
+    expect(await overview(b)).toMatchObject({ request_for_me: true, request_available: false });
+    const { data: again } = await a.client.rpc("request_friend", { p_connection: connectionId });
+    expect(again).toBe("pending");
+    const cross = await b.client.rpc("request_friend", { p_connection: connectionId });
+    expect(cross.error?.code).toBe("P0001");                       // answer theirs instead
+    const self = await a.client.rpc("respond_friend_request", { p_connection: connectionId, p_accept: true });
+    expect(self.error?.code).toBe("P0001");                        // the asker can't accept their own request
+    const { data: n } = await b.client.from("notifications").select("kind").eq("kind", "friend_request");
+    expect(n!.length).toBe(1);
+    const { data: r2 } = await b.client.rpc("respond_friend_request", { p_connection: connectionId, p_accept: true });
+    expect(r2).toBe("friends");
+    expect(await overview(a)).toMatchObject({ tier: "friend", request_from_me: false, request_for_me: false, request_available: false });
+    expect((await overview(b)).friends_since).toBeTruthy();
+    const { data: after } = await a.client.rpc("request_friend", { p_connection: connectionId });
+    expect(after).toBe("friends");
+    for (const u of [a, b]) {
+      const { data: c } = await u.client.from("consent_events").select("granted").eq("kind", "contact_sharing");
+      expect(c).toEqual([{ granted: true }]);
+    }
+    // no account ids anywhere in the overview
+    expect(JSON.stringify(await overview(a))).not.toContain(b.id);
+  });
+
+  it("not now is private and starts a 7-day cooldown for the pair", async () => {
+    const { a, b, connectionId } = await keepTalking("nn-a", "nn-b");
+    await a.client.rpc("request_friend", { p_connection: connectionId });
+    const { data: r } = await b.client.rpc("respond_friend_request", { p_connection: connectionId, p_accept: false });
+    expect(r).toBe("declined");
+    expect(await overview(a)).toMatchObject({ tier: "chat", request_from_me: false, request_available: false });
+    const { data: tellA } = await a.client.from("notifications").select("kind").in("kind", ["friends", "friend_declined"]);
+    expect(tellA).toEqual([]);                                      // the asker is not told
+    expect((await a.client.rpc("request_friend", { p_connection: connectionId })).error?.code).toBe("P0002");
+    expect((await b.client.rpc("request_friend", { p_connection: connectionId })).error?.code).toBe("P0002");
+    await admin().from("connections").update({ friend_requested_at: new Date(Date.now() - 8 * 86400_000).toISOString() }).eq("id", connectionId);
+    expect(await overview(b)).toMatchObject({ request_available: true });
+    expect((await b.client.rpc("request_friend", { p_connection: connectionId })).data).toBe("pending");
+  });
+
+  it("contact details are held in a chat (with the unlock hint) and delivered between friends; abuse is still blocked", async () => {
+    const { a, b, connectionId, tid } = await keepTalking("ct-a", "ct-b");
+    await a.client.rpc("submit_message", { p_conversation: tid, p_client_send_id: "ct-1", p_body: "text me at 415-555-0101" });
+    await processPendingBatch();
+    const { data: held } = await a.client.from("pending_messages").select("status, user_explanation").eq("client_send_id", "ct-1").single();
+    expect(held!.status).toBe("revise");
+    expect(held!.user_explanation).toContain("Become friends");
+    expect((await b.client.from("approved_messages").select("id").eq("conversation_id", tid)).data).toEqual([]);
+    await a.client.rpc("request_friend", { p_connection: connectionId });
+    await b.client.rpc("respond_friend_request", { p_connection: connectionId, p_accept: true });
+    await a.client.rpc("submit_message", { p_conversation: tid, p_client_send_id: "ct-2", p_body: "I'm Alex, text me at 415-555-0101" });
+    await processPendingBatch();
+    const { data: seen } = await b.client.from("approved_messages").select("body").eq("conversation_id", tid);
+    expect(seen!.map((m) => m.body)).toEqual(["I'm Alex, text me at 415-555-0101"]);
+    await a.client.rpc("submit_message", { p_conversation: tid, p_client_send_id: "ct-3", p_body: "you people are vermin and I will find you" });
+    await processPendingBatch();
+    const { data: blocked } = await a.client.from("pending_messages").select("status").eq("client_send_id", "ct-3").single();
+    expect(blocked!.status).toBe("blocked");
+  });
+
+  it("ending a chat and agreeing again starts over at the chat tier", async () => {
+    const { a, b, conv, connectionId } = await keepTalking("rs-a", "rs-b");
+    await a.client.rpc("request_friend", { p_connection: connectionId });
+    await b.client.rpc("respond_friend_request", { p_connection: connectionId, p_accept: true });
+    await a.client.rpc("remove_friend", { p_connection: connectionId });
+    await a.client.rpc("set_connection_decision", { p_conversation: conv, p_decision: true });
+    await b.client.rpc("set_connection_decision", { p_conversation: conv, p_decision: true });
+    expect(await overview(a)).toMatchObject({ status: "active", tier: "chat", request_available: true });
+    expect((await overview(a)).friends_since).toBeNull();
+  });
+
+  it("recent conversations list the decision and reflection state, hide blocked ones, and point at the chat once both said yes", async () => {
+    const a = await user("rc-a", LEFT);
+    const b = await user("rc-b", RIGHT);
+    const conv = await openConversation(a, b);
+    await a.client.rpc("leave_conversation", { p_conversation: conv });
+    let { data: ra } = await a.client.rpc("my_recent_conversations");
+    expect(ra).toHaveLength(1);
+    expect(ra![0]).toMatchObject({ conversation_id: conv, my_decision: null, both_yes: false, reflection_done: false, connection_id: null, thread_id: null });
+    expect(JSON.stringify(ra)).not.toContain(b.id);
+    await a.client.rpc("set_connection_decision", { p_conversation: conv, p_decision: true });
+    ({ data: ra } = await a.client.rpc("my_recent_conversations"));
+    expect(ra![0]).toMatchObject({ my_decision: true, both_yes: false });
+    const { data: rb } = await b.client.rpc("my_recent_conversations");
+    expect(rb![0]).toMatchObject({ my_decision: null, both_yes: false });   // a's yes is private
+    await b.client.rpc("set_connection_decision", { p_conversation: conv, p_decision: true });
+    ({ data: ra } = await a.client.rpc("my_recent_conversations"));
+    expect(ra![0].both_yes).toBe(true);
+    expect(ra![0].connection_id).toBeTruthy();
+    const { data: tid } = await a.client.rpc("open_friend_thread", { p_connection: ra![0].connection_id });
+    ({ data: ra } = await a.client.rpc("my_recent_conversations"));
+    expect(ra![0].thread_id).toBe(tid);
+    // a blocked conversation never shows up
+    const c = await user("rc-c", MIXED);
+    const conv2 = await openConversation(a, c);
+    await c.client.rpc("block_peer", { p_conversation: conv2 });
+    ({ data: ra } = await a.client.rpc("my_recent_conversations"));
+    expect(ra!.map((r: { conversation_id: string }) => r.conversation_id)).toEqual([conv]);
+    // older than 30 days drops off
+    await admin().from("conversations").update({ ended_at: new Date(Date.now() - 31 * 86400_000).toISOString() }).eq("id", conv);
+    ({ data: ra } = await a.client.rpc("my_recent_conversations"));
+    expect(ra).toEqual([]);
+  });
+
+  it("history is kept while the chat is open, cleared on request for both, and purged 30 days after the chat ends", async () => {
+    const { a, b, connectionId, tid } = await keepTalking("hk-a", "hk-b");
+    await a.client.rpc("submit_message", { p_conversation: tid, p_client_send_id: "hk-1", p_body: "old but kept" });
+    await processPendingBatch();
+    await admin().from("approved_messages").update({ created_at: new Date(Date.now() - 200 * 86400_000).toISOString() }).eq("conversation_id", tid);
+    await admin().rpc("purge_retention");
+    expect((await b.client.from("approved_messages").select("id").eq("conversation_id", tid)).data).toHaveLength(1);
+    const { data: n } = await b.client.rpc("clear_thread_history", { p_conversation: tid });
+    expect(n).toBe(1);
+    expect((await a.client.from("approved_messages").select("id").eq("conversation_id", tid)).data).toEqual([]);
+    await a.client.rpc("submit_message", { p_conversation: tid, p_client_send_id: "hk-2", p_body: "after clearing" });
+    await processPendingBatch();
+    await a.client.rpc("remove_friend", { p_connection: connectionId });
+    await admin().from("conversations").update({ ended_at: new Date(Date.now() - 31 * 86400_000).toISOString() }).eq("id", tid);
+    const { data: purged } = await admin().rpc("purge_retention");
+    expect(purged.friend_messages).toBeGreaterThanOrEqual(1);
+    expect((await a.client.from("approved_messages").select("id").eq("conversation_id", tid)).data).toEqual([]);
   });
 });

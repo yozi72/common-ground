@@ -12,7 +12,7 @@
 import "server-only";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { moderate, GatewayError } from "@/lib/ai/gateway";
-import { runDetectors } from "@/lib/ai/detectors";
+import { runDetectors, hitsAreIdentifying } from "@/lib/ai/detectors";
 import { generateNextQuestion } from "./questions";
 import { Deadline } from "./deadline";
 
@@ -25,13 +25,14 @@ export const CLAIM_LEASE_SECONDS = 75;      // ≥ gateway timeout (25 s) × 2 t
 const PER_MESSAGE_BUDGET_MS = 30_000;       // worst case one moderation call incl. a retry
 const BATCH = 5;                            // claim in small batches so nothing waits on a long lease
 
+// Drains everything that is due, in small claims, until the deadline leaves no
+// room for another message. `limit` caps one claim; the deadline bounds the run.
 export async function processPendingBatch(limit = 10, deadline: Deadline = Deadline.none()): Promise<{ processed: number; deferred: number; released: number }> {
   const admin = supabaseAdmin();
   const out = { processed: 0, deferred: 0, released: 0 };
-  let left = limit;
-  while (left > 0 && deadline.remainingMs() > PER_MESSAGE_BUDGET_MS) {
+  while (deadline.remainingMs() > PER_MESSAGE_BUDGET_MS) {
     // never claim more than can plausibly start before the deadline
-    const n = Math.min(BATCH, left, Math.max(1, Math.floor(deadline.remainingMs() / PER_MESSAGE_BUDGET_MS)));
+    const n = Math.min(BATCH, limit, Math.max(1, Math.floor(deadline.remainingMs() / PER_MESSAGE_BUDGET_MS)));
     const { data, error } = await admin.rpc("claim_pending", { p_limit: n, p_lease_seconds: CLAIM_LEASE_SECONDS });
     if (error) throw new Error(`claim_pending: ${error.message}`);
     const rows = (data ?? []) as PendingRow[];
@@ -45,7 +46,6 @@ export async function processPendingBatch(limit = 10, deadline: Deadline = Deadl
       const ok = await processOne(rows[i]);
       if (ok) out.processed++; else out.deferred++;
     }
-    left -= rows.length;
     if (rows.length < n) break;
   }
   return out;
@@ -71,9 +71,18 @@ async function processOne(row: PendingRow): Promise<boolean> {
       .order("created_at", { ascending: false })
       .limit(8);
     const recent = (recentRows ?? []).reverse().map((m) => ({ fromSender: m.sender_participant_id === row.sender_participant_id, body: m.body }));
-    const detectorHits = runDetectors(row.body, recent.filter((r) => r.fromSender).map((r) => r.body));
+    // Chat tier: in a friends-tier chat both people chose to share contact details.
+    const { data: conv } = await admin.from("conversations").select("kind, connection_id").eq("id", row.conversation_id).maybeSingle();
+    const isThread = conv?.kind === "friend";
+    const { data: link } = isThread && conv?.connection_id ? await admin.from("connections").select("tier, status").eq("id", conv.connection_id).maybeSingle() : { data: null };
+    const contactAllowed = !!(isThread && link?.tier === "friend" && link?.status === "active");
+    const detectorHits = contactAllowed ? [] : runDetectors(row.body, recent.filter((r) => r.fromSender).map((r) => r.body));
 
-    const result = await moderate({ body: row.body, kind: row.kind, recent, detectorHits });
+    const result = await moderate({ body: row.body, kind: row.kind, recent, detectorHits, contactAllowed });
+    // In a continuing chat, explain the way to unlock contact sharing (never auto-request it).
+    if (isThread && !contactAllowed && result.decision !== "allow" && hitsAreIdentifying(result.detectorHits)) {
+      result.user_explanation = `${result.user_explanation ?? "This looks like it contains contact or identifying details."} Contact details can be shared once you both choose “Become friends” in this chat.`;
+    }
 
     const { data: outcome, error } = await admin.rpc("apply_moderation_decision", {
       p_pending: row.id,

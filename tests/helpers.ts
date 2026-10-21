@@ -76,12 +76,13 @@ export async function matchPair(a: TestUser, b: TestUser) {
   if (eb) throw eb;
   const { data: pairs, error } = await admin().rpc("run_matching");
   if (error) throw error;
-  const { data: inv } = await a.client.from("invitation_participants").select("invitation_id").eq("account_id", a.id).limit(1).single();
-  return { pairs: pairs as number, invitationId: inv!.invitation_id as string };
+  const { data: inv } = await a.client.from("invitation_participants").select("invitation_id, match_invitations!inner(status)").eq("account_id", a.id).eq("match_invitations.status", "pending").limit(1).maybeSingle();
+  return { pairs: pairs as number, invitationId: (inv?.invitation_id ?? null) as string | null };
 }
 
 export async function openConversation(a: TestUser, b: TestUser) {
   const { invitationId } = await matchPair(a, b);
+  if (!invitationId) throw new Error("openConversation: no pending invitation was created");
   const [ra, rb] = await Promise.all([
     a.client.rpc("respond_invitation", { p_invitation: invitationId, p_accept: true }),
     b.client.rpc("respond_invitation", { p_invitation: invitationId, p_accept: true }),

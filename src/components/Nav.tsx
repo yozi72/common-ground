@@ -5,7 +5,7 @@ import { SignOutButton } from "./SignOutButton";
 import { FriendsLink } from "./FriendsLink";
 
 // Top bar on every screen; on phones the section links move into a bottom
-// tab bar (TabBar) so Talk / Friends / Profile are always one tap away.
+// tab bar (TabBar) so Talk / Chats / Profile are always one tap away.
 export async function Nav() {
   const supabase = await createSupabaseServerClient();
   const { data } = await supabase.auth.getUser();

@@ -20,9 +20,9 @@ Record of product and technical decisions for the Common Ground pilot, so the ne
 
 **Moderation outage.** Hold with backoff and visible explanation; sender may cancel after 45 s; after six failed attempts the message goes to human review. Nothing is ever passed on error.
 
-**Friendship/reconnection.** Enabled, no time gate, mutual private opt-in after any ended conversation (not after a block). Both find out only when both said yes. Each friendship gets one persistent moderated chat (usable any time, offline delivery, 30-day per-message retention) under the original aliases; there are no reconnection invitations. Policy version `v1-mutual-no-gate`; switchable off via `friendship_enabled`.
+**Keeping in touch (two tiers).** After any live conversation that did not end with a block, each person privately says whether they want to keep talking. Only if both say yes do they find out, and they get one persistent chat under Chats (screened like a live conversation, aliases only, contact details held back, usable any time). Inside that chat either person can ask to become friends; the request is visible to the other person, who accepts or declines, with at most one request per pair every 7 days. Only a friends-tier chat allows names and contact details; abuse and threat screening stays on. Removing the chat or a block revokes both decisions; restoring needs fresh mutual consent and starts again at the chat tier. Decided 2026-10-21 after the pilot owner's design review. Policy version `v1-mutual-no-gate` for the keep-talking decision; `contact_sharing_enabled=true` gates the friends tier.
 
-**Contact sharing.** Disabled. No feature, no toggle in the UI. `contact_sharing_enabled=false` is recorded for a future explicit policy.
+**Contact sharing.** Allowed only in a friends-tier chat (see above), with explicit consent from both people recorded as `contact_sharing` consent events. The app tells people before they accept that it cannot protect details once shared.
 
 **Stance reveal.** Only the "you differ" note at match time. No coarse summary at reflection.
 
@@ -37,7 +37,7 @@ Record of product and technical decisions for the Common Ground pilot, so the ne
 ## Still open
 
 1. **Launch windows.** Scheduled windows were a suggestion, not a requirement. The queue works any time; a window would just be a published time when more people are waiting.
-2. **Contact sharing policy.** Stays disabled until an explicit, separately consented, granular policy is written.
+2. **Contact sharing policy.** Implemented as the friends tier (mutual, visible request, 7-day cooldown). Open: whether to require a minimum number of exchanged messages before a request can be made.
 3. **Success criteria.** Metrics captured: queue abandonment (availability_requests by status), match acceptance (invitation_participants), completion (conversations.end_reason), felt understood / recognized shared experience (session_reflections), repeat participation, moderation outcomes (moderation_decisions by decision/provider), appeals overturned. Thresholds that would justify expanding are not set.
 4. **Reviewer capacity and SLA.** One admin for the pilot; what happens if held messages wait hours is unspecified beyond the sender's ability to cancel.
 5. **Model cost budget.** Not set. ~1 call per message, ~1 per question; `moderation_decisions.latency_ms` and row counts give the numbers.

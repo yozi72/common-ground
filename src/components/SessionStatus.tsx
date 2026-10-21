@@ -47,7 +47,7 @@ export function SessionStatus({ schedule, serverNow, initialSession, href }: { s
         <p className="muted">
           New-person matching happens {whenLabel.toLowerCase()} for {schedule.durationMinutes} minutes, starting {to12h(schedule.startTime)} {schedule.timezone === "America/Los_Angeles" ? "Pacific" : schedule.timezone}. Times shown in {tzLabel}.
         </p>
-        <p className="muted">You can sign up, answer the questionnaire and set a reminder any time. Once you become friends, you can message each other anytime.</p>
+        <p className="muted">You can sign up, answer the questionnaire and set a reminder any time. If you both want to keep talking afterwards, you get a chat you can use any time.</p>
       </div>
     </div>
   );

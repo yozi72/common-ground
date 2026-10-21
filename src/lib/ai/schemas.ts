@@ -35,6 +35,9 @@ export type ModerationInput = {
   recent: { fromSender: boolean; body: string }[];
   // Hits from deterministic detectors, passed so the model can weigh them.
   detectorHits: string[];
+  // Friends tier: both people chose to share contact details in this chat, so
+  // identity screening is off (abuse/threat screening stays on).
+  contactAllowed?: boolean;
 };
 
 export type QuestionInput = {

@@ -40,9 +40,11 @@ export function providerInfo() {
 
 export async function moderate(input: ModerationInput): Promise<ModerationResult> {
   const started = Date.now();
-  const hits = input.detectorHits.length
+  // Every deterministic detector is an identity/contact detector; in a friends-tier
+  // chat they are not applied at all (the model still screens abuse and threats).
+  const hits: DetectorHit[] = input.contactAllowed ? [] : (input.detectorHits.length
     ? (input.detectorHits as DetectorHit[])
-    : runDetectors(input.body, input.recent.filter((r) => r.fromSender).map((r) => r.body));
+    : runDetectors(input.body, input.recent.filter((r) => r.fromSender).map((r) => r.body)));
   const { provider } = providerInfo();
 
   if (provider === "mock") {
@@ -51,6 +53,7 @@ export async function moderate(input: ModerationInput): Promise<ModerationResult
 
   const userPrompt = [
     `Message kind: ${input.kind}`,
+    `Contact sharing in this chat: ${input.contactAllowed ? "ALLOWED (both people chose to become friends; names, contact details, employers, platforms and links are fine; still block threats, harassment, dehumanization, sexual content and doxxing of third parties)" : "NOT allowed (apply identity protection)"}`,
     `Detector hits: ${hits.length ? hits.join(", ") : "none"}`,
     wrapUntrusted("recent_context", input.recent.map((r) => `${r.fromSender ? "SENDER" : "OTHER"}: ${r.body}`).join("\n") || "(none)"),
     wrapUntrusted("pending_message", input.body),

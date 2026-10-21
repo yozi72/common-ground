@@ -5,6 +5,8 @@ import { Sprout, Bridge } from "@/components/Illustrations";
 
 type Reflection = { felt_understood: number | null; recognized_shared: number | null; would_repeat: boolean | null; free_text: string | null };
 
+// The keep-talking decision comes first: it is the one thing that is lost if
+// someone leaves early. The reflection questions follow and are optional.
 export function Reflect({ conversationId, peerAlias, endReason, questionsAsked, initialReflection, initialDecision, friendshipEnabled }: {
   conversationId: string; peerAlias: string; endReason: string | null; questionsAsked: number;
   initialReflection: Reflection | null; initialDecision: boolean | null; friendshipEnabled: boolean;
@@ -48,9 +50,29 @@ export function Reflect({ conversationId, peerAlias, endReason, questionsAsked, 
       </div>
       {error && <div className="notice notice-bad" role="alert">{error}</div>}
 
+      {friendshipEnabled && !blocked && (
+        <section className="card space-y-3" style={{ borderColor: "var(--accent)" }}>
+          <Bridge className="w-32 h-auto mx-auto" />
+          <h2 className="font-semibold text-xl text-center">Keep talking with {peerAlias}?</h2>
+          <p className="muted text-sm">Your answer is private. If you both say yes, you both find out and get a chat under Chats that works any time, still under your aliases, still checked before delivery, and still without contact details unless you later both choose to become friends. If only one of you says yes, neither of you is told. You can come back to this from the Chats tab for 30 days.</p>
+          {connected ? (
+            <div className="notice notice-ok" role="status">You both said yes. You'll find {peerAlias} under <Link className="underline" href="/connections">Chats</Link>.</div>
+          ) : decision === true ? (
+            <p className="notice notice-ok" role="status">Recorded. If they also say yes, the chat appears under Chats. <button className="underline" onClick={() => decide(false)}>Change to no</button></p>
+          ) : decision === false ? (
+            <p className="muted text-sm" role="status">Recorded. <button className="underline" onClick={() => decide(true)}>Change to yes</button></p>
+          ) : (
+            <div className="flex gap-2">
+              <button className="btn btn-primary" onClick={() => decide(true)}>Yes, keep talking</button>
+              <button className="btn btn-secondary" onClick={() => decide(false)}>No thanks</button>
+            </div>
+          )}
+        </section>
+      )}
+
       <section className="card space-y-4">
         <h2 className="font-semibold text-xl">A quick reflection</h2>
-        <p className="muted text-sm">Only you and the pilot team see this. It's how we learn whether this is worth doing.</p>
+        <p className="muted text-sm">Optional. Only you and the pilot team see this. It's how we learn whether this is worth doing.</p>
         <Scale label="Did you feel understood?" value={understood} onChange={setUnderstood} />
         <Scale label="Did you recognize something of your own experience in theirs?" value={shared} onChange={setShared} />
         <fieldset>
@@ -65,26 +87,6 @@ export function Reflect({ conversationId, peerAlias, endReason, questionsAsked, 
         <button className="btn btn-primary" onClick={saveReflection}>{saved ? "Update" : "Save"}</button>
         {saved && <span className="muted text-sm ml-3" role="status">Saved.</span>}
       </section>
-
-      {friendshipEnabled && !blocked && (
-        <section className="card space-y-3" style={{ borderColor: "var(--accent)" }}>
-          <Bridge className="w-32 h-auto mx-auto" />
-          <h2 className="font-semibold text-xl text-center">Would you talk with {peerAlias} again?</h2>
-          <p className="muted text-sm">Your answer is private. If you both say yes, you'll both see it and get a shared chat you can use any time, still under your aliases. If only one of you says yes, neither of you is told.</p>
-          {connected ? (
-            <div className="notice notice-ok" role="status">You both said yes. You'll find {peerAlias} under <Link className="underline" href="/connections">Friends</Link>.</div>
-          ) : decision === true ? (
-            <p className="notice notice-ok" role="status">Recorded. If they also say yes, they'll appear under Friends.</p>
-          ) : decision === false ? (
-            <p className="muted text-sm" role="status">Recorded. <button className="underline" onClick={() => decide(true)}>Change to yes</button></p>
-          ) : (
-            <div className="flex gap-2">
-              <button className="btn btn-primary" onClick={() => decide(true)}>Yes, I'd talk again</button>
-              <button className="btn btn-secondary" onClick={() => decide(false)}>No thanks</button>
-            </div>
-          )}
-        </section>
-      )}
 
       <Link href="/lobby" className="btn btn-secondary w-full">Back to Talk</Link>
     </div>

@@ -33,6 +33,7 @@ Decide one of:
 Principles:
 - Allow descriptions of anger, fear, grief and political concern. "I am angry about my situation" is allowed; "you people are vermin" is not.
 - Never punish a political viewpoint itself. If the message turns into a political argument, prefer "revise" with a rewrite that returns to personal experience, not a lecture.
+- The user prompt states whether contact sharing is allowed in this chat. When it is ALLOWED, do not flag or revise names, contact details, employers, locations, platforms or links; keep every other rule. When it is NOT allowed:
 - Identity protection: flag contact details (phone, email, handles, links), real-name self-disclosure ("my name is…"), exact addresses, employer + location combinations, and attempts to encode identifying details (spelled-out "at"/"dot", spaced digits, hints across messages). Consider the recent context: a detail may identify someone in combination with earlier ones. Deterministic detector hits are provided; they are hints, not verdicts.
 - The sender sees user_explanation and suggested_revision. The recipient sees nothing. Explain the issue without repeating the sensitive content. Never claim the system guarantees anonymity.
 - suggested_revision must preserve the sender's meaning and voice, remove the problem, and be something a reasonable person would accept. Leave it null for "block" and "review".

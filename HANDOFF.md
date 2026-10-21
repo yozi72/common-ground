@@ -27,7 +27,7 @@ Short status for anyone reviewing this codebase (including an AI reviewer). Upda
 - Leave / block / report; partner-away notice (≤2 min); abandonment; reflection; mutual-consent "Friends" with one persistent chat per friendship under the same aliases (see "Friend chats" below); account + data deletion; retention purge.
 - Profile stats (people talked with, conversations, mutual friends) and 13 participation badges; the other participant sees only coarse tiers (`peer_badges`), never exact counts.
 - Admin review console at `/admin` for the `ADMIN_EMAIL` account (held messages, reports, appeals, policy knobs).
-- 125 tests across 11 files (integration against a local Supabase + unit) (`npm test`), lint, typecheck, production build.
+- 131 tests across 11 files (integration against a local Supabase + unit) (`npm test`), lint, typecheck, production build.
 
 ## Unfinished, mocked, or known issues
 
@@ -113,6 +113,22 @@ All nine findings were confirmed and fixed in `2c165c7` (migration `0004_review_
 | 7 | Success metric counted one participant | `conversation_opened` logged for both participants | pilot “metric is recorded for both participants” |
 | — | Sign-in page wording | mentions optional session reminders | — |
 
+## Chats with two tiers (2026-10-21)
+
+**Why.** The pilot owner wanted people to be able to grow a good conversation into a real contact without giving up the anonymity promise for everyone else. The old single "friends" step is now two separate decisions.
+
+**Three states for a past conversation**
+
+- **Ended.** Listed under Chats → Recent conversations for 30 days (`my_recent_conversations`), with the person's own decision state and whether the reflection is done. Blocked conversations are never listed. The lobby shows a nudge while the keep-talking decision is still open. The reflection page asks the keep-talking question first.
+- **Continuing** (`connections.tier = 'chat'`). Both privately said "keep talking" (`set_connection_decision`, unchanged and private). One persistent chat: any time, offline, aliases, every message screened, contact details held back. When a message is held for identifying details the explanation adds "Contact details can be shared once you both choose Become friends". History stays until either person clears it (`clear_thread_history`, deletes for both) or the chat ends; then 30 days.
+- **Friends** (`tier = 'friend'`). One person sends a visible request (`request_friend`), the other accepts or says not now (`respond_friend_request`). "Not now" is private and starts a 7-day cooldown for the pair (`friend_request_cooldown_days`). The asker's request is idempotent; the other person cannot send a competing request while one is pending. Both decisions are recorded as `contact_sharing` consent events. In a friends-tier chat the deterministic identity detectors are not applied and the model is told contact sharing is allowed; threats, harassment, dehumanization, sexual content and doxxing of third parties are still blocked. The chat header and the privacy page say the app cannot protect details once shared.
+
+**Ending and restoring.** End chat / block revoke both keep-talking decisions as before; a restored connection starts over at the chat tier with no pending request and no friends date (fresh consent for contact sharing). A detector hit never triggers a request; the request lives only on its own button.
+
+**Copy.** Tab renamed Chats; landing, onboarding acknowledgement, privacy page and the settings notification section updated; DECISIONS.md records the policy (`contact_sharing_enabled = true` gates the friends tier).
+
+**Verified locally (browser):** Chats tab with an ongoing chat and a recent conversation, reflection page order, lobby nudge, chat header, Become friends confirmation and request sent. **Not verified in the browser:** the accepting side and a friends-tier message (both covered by tests: request/accept/decline/cooldown, held vs delivered contact details, abuse still blocked, restore resets the tier, recent-conversation states, history kept/cleared/purged).
+
 ## Combined audit (e1e4b49) — status
 
 | # | Finding | Status | Fix / evidence |
@@ -169,7 +185,7 @@ Dependency audit: `npm audit --omit=dev` reports 0 vulnerabilities; `npm audit` 
 
 **Fully separate from new-person matching.** `has_active_conversation()` counts only `kind = 'live'` conversations, so friend chats never block joining the queue, accepting an invitation, or the lobby's "you're in a conversation" redirect. Presence, partner-away, abandonment and the opening-round flow apply to live conversations only. Metrics (`conversation_started`, `conversation_opened`, `successful_participants`) ignore friend threads. The old `request_reconnection` RPC is dropped; legacy `reconnect` invitations were expired by migration 0008.
 
-**Controls and privacy in friend chats:** mute (no pushes, still counted as unread), remove friend (ends the friendship for both; existing messages stay readable until they expire; no new messages), block (ends every thread between the two and cancels undelivered messages), report (unchanged). Push for friend messages is a **separate consent** (Profile → "Notify me about new friend messages"), the lock-screen text is always "You have a new message." with no name or content, and at most one push per thread per 10 minutes. Friend messages are deleted 30 days after they were sent (`purge_retention`), independent of whether the thread is open.
+**Controls and privacy in friend chats:** mute (no pushes, still counted as unread), remove friend (ends the friendship for both; existing messages stay readable until they expire; no new messages), block (ends every thread between the two and cancels undelivered messages), report (unchanged). Push for friend messages is a **separate consent** (Profile → "Notify me about new friend messages"), the lock-screen text is always "You have a new message." with no name or content, and at most one push per thread per 10 minutes. Chat history is kept while the chat is open (changed 2026-10-21; it used to expire per message after 30 days) and deleted 30 days after the chat ends.
 
 **Stranded queue repair:** `leave_queue` now declines a pending invitation and requeues the other person; `open_conversation_for_invitation` requeues anyone whose competing invitation it declines; `join_queue` and `expire_stale` repair `invited` rows whose invitation is no longer pending; migration 0008 repaired existing rows. `respond_invitation` takes the per-account advisory locks (sorted) before locking the invitation row (migration 0009), which removed a deadlock found by the new concurrency test (two invitations sharing a person, accepted at the same time).
 
@@ -196,6 +212,8 @@ Dependency audit: `npm audit --omit=dev` reports 0 vulnerabilities; `npm audit` 
 - Scheduler: `worker_config` rows `tick_url` and `cron_secret` on the hosted database (set via service role); the cron job `common-ground-tick` is created by migration 0005.
 
 ## Change log
+
+- 2026-10-21 — Chats with two tiers: private keep-talking decision → continuing chat (screened, no contact details), visible rate-limited Become friends request → friends-tier chat with contact sharing allowed and abuse screening kept; recent conversations list and lobby nudge for open decisions; reflection asks the decision first; chat history kept until cleared; Chats tab. Migration 0013. 131 tests.
 
 - 2026-10-21 — Combined audit fixes (15 findings: peer-id exposure, validated writes, friend-thread leave guard, decision locking, moderation claim tokens, worker deadline, matching revalidation, detector casing, email outbox claims/retries, internal RPC grants, unsubscribe POST flow, security headers, config/retention cleanup, chat gap catch-up and deletion reconciliation). Migration 0012. 125 tests.
 

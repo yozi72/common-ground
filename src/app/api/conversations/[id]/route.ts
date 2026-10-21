@@ -20,6 +20,9 @@ const Body = z.discriminatedUnion("action", [
   z.object({ action: z.literal("mute"), muted: z.boolean() }),
   z.object({ action: z.literal("question") }),
   z.object({ action: z.literal("remove_friend"), connection_id: z.string().uuid() }),
+  z.object({ action: z.literal("friend_request"), connection_id: z.string().uuid() }),
+  z.object({ action: z.literal("friend_respond"), connection_id: z.string().uuid(), accept: z.boolean() }),
+  z.object({ action: z.literal("clear_history") }),
   z.object({
     action: z.literal("reflection"),
     felt_understood: z.number().int().min(1).max(5).optional(),
@@ -87,6 +90,22 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
         const { error } = await supabase.rpc("remove_friend", { p_connection: b.connection_id });
         if (error) throw fromRpcError(error);
         return ok();
+      }
+      case "friend_request": {
+        // visible, rate-limited request to unlock contact sharing; the other person accepts or declines
+        const { data, error } = await supabase.rpc("request_friend", { p_connection: b.connection_id });
+        if (error) throw fromRpcError(error);
+        return ok({ status: data });
+      }
+      case "friend_respond": {
+        const { data, error } = await supabase.rpc("respond_friend_request", { p_connection: b.connection_id, p_accept: b.accept });
+        if (error) throw fromRpcError(error);
+        return ok({ status: data });
+      }
+      case "clear_history": {
+        const { data, error } = await supabase.rpc("clear_thread_history", { p_conversation: id });
+        if (error) throw fromRpcError(error);
+        return ok({ deleted: data });
       }
       case "reflection": {
         const { data: pid } = await supabase.rpc("my_participant_id", { p_conversation: id });

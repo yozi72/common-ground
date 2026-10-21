@@ -14,7 +14,7 @@ export default function Privacy() {
         <h2 className="font-medium text-lg">What we keep and for how long</h2>
         <ul className="list-disc pl-5">
           <li>Delivered messages in a session with a new person: deleted 30 days after that conversation ends.</li>
-          <li>Delivered messages in a friend chat: each one is deleted 30 days after it was sent, even if the chat stays open.</li>
+          <li>Delivered messages in a chat you both chose to keep: kept while the chat is open, until either of you clears the history; deleted 30 days after the chat ends.</li>
           <li>Held or blocked messages: deleted after 7 days (longer if under appeal).</li>
           <li>Reports: kept up to a year for safety review.</li>
           <li>Waiting-list entries: deleted 90 days after they end. Aggregate usage counters (joins, waits, deliveries; never message content or answers): kept up to a year.</li>
@@ -24,7 +24,7 @@ export default function Privacy() {
       </section>
       <section className="space-y-2">
         <h2 className="font-medium text-lg">Reconnecting</h2>
-        <p>After a conversation, each of you can privately say whether you'd talk again. Only if both say yes do you both find out. Sharing contact details is not available in this pilot.</p>
+        <p>After a conversation, each of you can privately say whether you'd like to keep talking. Only if both say yes do you both find out, and you get a chat under Chats. Messages there are still checked and contact details are still held back. Later, either of you can ask to become friends; only if the other accepts can you share names and contact details in that chat. Once shared, the app can no longer protect them. Abuse and threats are still screened.</p>
       </section>
     </article>
   );

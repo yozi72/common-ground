@@ -19,6 +19,7 @@ const ANY_AFTER_MS = 120_000;
 export function Lobby(props: {
   userId: string; initialRequest: Request; initialInvitations: Invitation[]; emailAvailable: boolean; pushAvailable: boolean; vapidKey: string | null;
   schedule: ScheduleConfig; initialSession: SessionState; serverNow: number; timezoneOverride: string | null; reminderPrefs: ReminderPrefs | null; answeredCount?: number;
+  undecided?: { conversation_id: string; peer_alias: string }[];
 }) {
   const router = useRouter();
   const { now, sync, tick } = useServerClock(props.serverNow);
@@ -114,6 +115,12 @@ export function Lobby(props: {
       </div>
       {error && <div className="notice notice-bad" role="alert">{error}</div>}
       {notice && <div className="notice notice-warn" role="status">{notice}</div>}
+      {(props.undecided ?? []).slice(0, 2).map((u) => (
+        <div key={u.conversation_id} className="notice text-sm flex items-center justify-between gap-3 flex-wrap" role="status">
+          <span>You haven&apos;t said yet whether you&apos;d keep talking with {u.peer_alias}.</span>
+          <Link className="btn btn-secondary text-sm" href={`/c/${u.conversation_id}/reflect`}>Decide</Link>
+        </div>
+      ))}
 
       {invitations.map((inv) => (
         <section key={inv.id} className="card space-y-3 pop" aria-live="polite" style={{ borderColor: "var(--accent)" }}>

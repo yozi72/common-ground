@@ -5,7 +5,7 @@ import { useUnreadTotal } from "./useUnread";
 
 const TABS = [
   { href: "/lobby", label: "Talk", match: (p: string) => p.startsWith("/lobby") || p.startsWith("/c/") },
-  { href: "/connections", label: "Friends", match: (p: string) => p.startsWith("/connections") },
+  { href: "/connections", label: "Chats", match: (p: string) => p.startsWith("/connections") },
   { href: "/settings", label: "Profile", match: (p: string) => p.startsWith("/settings") || p.startsWith("/onboarding") },
 ];
 
@@ -16,7 +16,7 @@ function Icon({ name, active }: { name: string; active: boolean }) {
       <path d="M4 6a3 3 0 0 1 3-3h10a3 3 0 0 1 3 3v7a3 3 0 0 1-3 3H9l-4 4v-4a3 3 0 0 1-1-2.2V6z" stroke={stroke} strokeWidth="2" fill={active ? "var(--accent-2)" : "none"} />
     </svg>
   );
-  if (name === "Friends") return (
+  if (name === "Chats") return (
     <svg width="26" height="26" viewBox="0 0 24 24" fill="none" aria-hidden="true">
       <circle cx="9" cy="8" r="3.5" stroke={stroke} strokeWidth="2" fill={active ? "var(--accent-2)" : "none"} />
       <circle cx="16.5" cy="9.5" r="2.5" stroke={stroke} strokeWidth="2" />
@@ -51,7 +51,7 @@ export function TabBar({ isAdmin = false, unread: initialUnread = 0 }: { isAdmin
               <Link href={t.href} aria-current={active ? "page" : undefined} className="flex flex-col items-center gap-0.5 py-2 text-xs font-semibold" style={{ color: active ? "var(--accent)" : "var(--muted)" }}>
                 <span className="relative">
                   <Icon name={t.label} active={active} />
-                  {t.label === "Friends" && unread > 0 && <span className="count absolute -top-1 -right-3" aria-label={`${unread} unread`}>{unread}</span>}
+                  {t.label === "Chats" && unread > 0 && <span className="count absolute -top-1 -right-3" aria-label={`${unread} unread`}>{unread}</span>}
                 </span>
                 {t.label}
               </Link>
