@@ -13,7 +13,12 @@ type Question = { id: string; seq: number; phase: "opening" | "mid"; question_te
 type Answer = { question_id: string; participant_id: string; choice_index: number | null; custom_text: string | null; status: string };
 type Msg = { id: string; sender_participant_id: string; kind: "chat" | "answer"; body: string; created_at: string };
 type ThreadState = { tier?: "chat" | "friend"; request_from_me?: boolean; request_for_me?: boolean; request_available?: boolean; status?: string; connection_id?: string };
-type Pending = { id: string; client_send_id: string; kind: "chat" | "answer"; question_id: string | null; body: string; status: string; user_explanation: string | null; suggested_revision: string | null; created_at: string; attempts: number };
+type Pending = { id: string; client_send_id: string; kind: "chat" | "answer"; question_id: string | null; body: string; status: string; user_explanation: string | null; suggested_revision: string | null; created_at: string; attempts: number; undeliverable_reason?: string | null };
+// A decided message (revise/blocked) can still be appealed after the conversation
+// ended or the history was cleared; it just cannot be sent any more.
+function undeliverableText(reason: string) {
+  return reason === "cleared" ? "This chat's history was cleared, so this can't be sent now." : reason === "unfriended" ? "This chat has ended, so this can't be sent now." : reason === "blocked" ? "This conversation was ended with a block, so this can't be sent now." : "This conversation has ended, so this can't be sent now.";
+}
 
 const PENDING_CANCEL_AFTER_MS = 45_000;
 
@@ -431,14 +436,15 @@ function PendingItem({ p, now, onAction }: { p: Pending; now: number; onAction: 
       {p.status === "revise" && (
         <div className="notice notice-warn space-y-2">
           <p>Not delivered. {p.user_explanation}</p>
-          {p.suggested_revision && (
+          {p.undeliverable_reason && <p className="text-xs">{undeliverableText(p.undeliverable_reason)} You can still appeal the decision for the record.</p>}
+          {p.suggested_revision && !p.undeliverable_reason && (
             <div className="rounded-lg p-2 text-sm" style={{ background: "var(--card)" }}>
               <p className="text-xs muted mb-1">Suggested rewording (sent only if you accept):</p>
               <p>{p.suggested_revision}</p>
             </div>
           )}
           <div className="flex flex-wrap gap-2">
-            {p.suggested_revision && <button className="btn btn-primary text-xs px-3 py-1.5 min-h-0" onClick={() => onAction(p.id, "accept_revision")}>Send this version</button>}
+            {p.suggested_revision && !p.undeliverable_reason && <button className="btn btn-primary text-xs px-3 py-1.5 min-h-0" onClick={() => onAction(p.id, "accept_revision")}>Send this version</button>}
             <button className="btn btn-secondary text-xs px-3 py-1.5 min-h-0" onClick={() => onAction(p.id, "cancel")}>Discard</button>
             {!appealed && <button className="btn btn-ghost text-xs px-3 py-1.5 min-h-0" onClick={() => setAppealing(true)}>Appeal</button>}
           </div>
@@ -448,6 +454,7 @@ function PendingItem({ p, now, onAction }: { p: Pending; now: number; onAction: 
       {p.status === "blocked" && (
         <div className="notice notice-bad space-y-2">
           <p>Not delivered. {p.user_explanation}</p>
+          {p.undeliverable_reason && <p className="text-xs">{undeliverableText(p.undeliverable_reason)} You can still appeal the decision for the record.</p>}
           <div className="flex gap-2">
             <button className="btn btn-secondary text-xs px-3 py-1.5 min-h-0" onClick={() => onAction(p.id, "cancel")}>Dismiss</button>
             {!appealed && <button className="btn btn-ghost text-xs px-3 py-1.5 min-h-0" onClick={() => setAppealing(true)}>Appeal</button>}

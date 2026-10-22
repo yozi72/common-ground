@@ -22,7 +22,7 @@ export default async function AdminPage() {
     admin.from("pending_messages").select("id, conversation_id, kind, body, status, attempts, last_error, user_explanation, created_at, moderation_decisions(decision, categories, detector_hits, provider, confidence, created_at)")
       .in("status", ["review", "pending"]).order("created_at").limit(50),
     admin.from("reports").select("id, conversation_id, reason, details, status, message_ids, created_at").in("status", ["open", "reviewing"]).order("created_at").limit(50),
-    admin.from("appeals").select("id, note, status, created_at, pending_messages(id, body, status, user_explanation)").eq("status", "open").order("created_at").limit(50),
+    admin.from("appeals").select("id, note, status, created_at, pending_messages(id, body, status, user_explanation, undeliverable_reason)").eq("status", "open").order("created_at").limit(50),
     admin.from("policy_config").select("key, value").order("key"),
     admin.from("availability_requests").select("*", { count: "exact", head: true }).eq("status", "waiting"),
     // service-role call to the metrics function itself (admin_metrics wraps it for

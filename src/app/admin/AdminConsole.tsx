@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 type Decision = { decision: string; categories: string[]; detector_hits: string[]; provider: string; confidence: number | null; created_at: string };
 type Review = { id: string; conversation_id: string; kind: string; body: string; status: string; attempts: number; last_error: string | null; user_explanation: string | null; created_at: string; moderation_decisions: Decision[] };
 type Report = { id: string; conversation_id: string | null; reason: string; details: string | null; status: string; message_ids: string[]; created_at: string };
-type Appeal = { id: string; note: string | null; status: string; created_at: string; pending_messages: { id: string; body: string; status: string; user_explanation: string | null } | null };
+type Appeal = { id: string; note: string | null; status: string; created_at: string; pending_messages: { id: string; body: string; status: string; user_explanation: string | null; undeliverable_reason?: string | null } | null };
 type Cfg = { key: string; value: unknown };
 type EvidenceMsg = { id: string; alias: string; kind: string; body: string; at: string };
 type Evidence = { report_id: string; cited: EvidenceMsg[]; context: EvidenceMsg[] };
@@ -123,7 +123,7 @@ export function AdminConsole({ review, reports, appeals, config, evidence, waiti
               <p className="muted text-xs">Original decision: {a.pending_messages?.status} · {a.pending_messages?.user_explanation}</p>
               {a.note && <p>Sender says: {a.note}</p>}
               <div className="flex gap-2">
-                <button className="btn btn-primary text-xs" disabled={busy} onClick={() => act({ action: "resolve_appeal", appeal_id: a.id, status: "overturned" })}>Overturn and deliver</button>
+                <button className="btn btn-primary text-xs" disabled={busy} onClick={() => act({ action: "resolve_appeal", appeal_id: a.id, status: "overturned" })}>{a.pending_messages?.undeliverable_reason ? "Overturn (record only; conversation over, nothing is delivered)" : "Overturn and deliver"}</button>
                 <button className="btn btn-secondary text-xs" disabled={busy} onClick={() => act({ action: "resolve_appeal", appeal_id: a.id, status: "upheld" })}>Uphold</button>
               </div>
             </li>
