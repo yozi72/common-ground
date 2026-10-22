@@ -114,7 +114,7 @@ All nine findings were confirmed and fixed in `2c165c7` (migration `0004_review_
 | — | Sign-in page wording | mentions optional session reminders | — |
 
 ## Finishing fixes (2026-10-22, combined reviews of 857a285 / 0017) — status
-Migration `0018_fairness_and_release.sql`. Each finding was verified against the code before changing it; all six reproduced.
+Code 3791cb8, migration `0018_fairness_and_release.sql` (hosted), Vercel production Ready. Verification: `npx vitest run` 25 files / 331 tests passed; typecheck, lint and production build clean. Each finding was verified against the code before changing it; all six reproduced.
 
 | # | Finding | Implementation | Test / scenario | Result |
 |---|---|---|---|---|
@@ -316,7 +316,7 @@ Dependency audit: `npm audit --omit=dev` reports 0 vulnerabilities; `npm audit` 
 
 ## Change log
 
-- 2026-10-22 — Finishing fixes: appeals with persisted status on every screen, polling backoff for deferred messages, never-started reminder/outbox releases, stable-age fair question scheduling, parser-based Postgres test guard. Migration 0018.
+- 2026-10-22 — Finishing fixes (deployed: 3791cb8, migration 0018, 331 tests): appeals with persisted status on every screen, polling backoff for deferred messages, never-started reminder/outbox releases, stable-age fair question scheduling, parser-based Postgres test guard. Migration 0018.
 - 2026-10-22 — Repair release (deployed: 5749b43, migration 0017, 318 tests): question route authorization and deadline, held messages and appeal outcomes after end/clear, push partial-failure accounting, outbox/reminder deadline handling, fair question scheduling, budget-exhaustion outcome, detector cases, Postgres test guard. Migration 0017.
 - 2026-10-22 — Stabilization release: test isolation hardened, detector lead-in strengths, per-account budgets through the gateway, connection semantics in every consumer, question generation under backlog, push deadline/release, verified lock order with coordinated Postgres tests, appeal eligibility separated from deliverability, consent-event vocabulary, route deadlines, friends-tier prompt, active-only request flags, invitation retention, shared matching throttle, observed matching failures. Migration 0016.
 - 2026-10-22 — Eighth review: appeal-safe retention, durable participation marks, one documented lock order (two more cycles removed), sync races closed with a server clear mark, cited evidence rendered, deadlines through reminders/pushes/admin paths with claim recovery and a question reserve, detector phrase table, life-context limit in the UI, contact-sharing gate everywhere with request-vs-activation consent, cron auth in every environment, schema null handling, per-account budget attribution, recent-conversation semantics. Migration 0015. 225 tests.
