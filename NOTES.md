@@ -1,7 +1,7 @@
 # NOTES.md — running notes (updated after every change)
 
 ## Current goal
-Seventh-review fixes (migration 0014) built, tested (152) and browser-checked locally; committing, applying 0014 to the hosted project and deploying. Then waiting on the user's real-device tests (push, a two-device chat including Become friends from both sides).
+Seventh-review fixes are live: commit 912eb92 pushed, migration 0014 applied to the hosted project, Vercel production deployment Ready (https://common-ground-dusky-nine.vercel.app), production tick clean. Waiting on the user's real-device tests (push, a two-device chat including Become friends from both sides).
 
 ## Decisions (with reasoning)
 - **Supabase + Next.js, local-first:** RLS gives per-row access checks; everything mutating goes through RPCs so race safety lives in SQL.
@@ -32,7 +32,7 @@ Seventh-review fixes (migration 0014) built, tested (152) and browser-checked lo
 - 69 automated tests; live two-user run on the deployed app (before v2).
 
 ## In progress
-- Seventh-review fixes: code complete; commit/push, `db push` (0014) and deploy in progress.
+- Nothing mid-edit. Seventh-review fixes committed (912eb92), pushed, hosted migration 0014 applied, deployed and verified.
 
 ## Next steps
 - User to test the friend chat on two real devices (offline delivery, unread badge, friend-message push after opting in under Profile).
