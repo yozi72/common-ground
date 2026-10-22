@@ -27,7 +27,7 @@ Short status for anyone reviewing this codebase (including an AI reviewer). Upda
 - Leave / block / report; partner-away notice (≤2 min); abandonment; reflection; mutual-consent "Friends" with one persistent chat per friendship under the same aliases (see "Friend chats" below); account + data deletion; retention purge.
 - Profile stats (people talked with, conversations, mutual friends) and 13 participation badges; the other participant sees only coarse tiers (`peer_badges`), never exact counts.
 - Admin review console at `/admin` for the `ADMIN_EMAIL` account (held messages, reports, appeals, policy knobs).
-- 172 tests across 14 files (integration against a local Supabase + unit) (`npm test`), lint, typecheck, production build.
+- 225 tests across 14 files (integration against a local Supabase + unit) (`npm test`), lint, typecheck, production build.
 
 ## Unfinished, mocked, or known issues
 
@@ -255,7 +255,7 @@ Dependency audit: `npm audit --omit=dev` reports 0 vulnerabilities; `npm audit` 
 
 ## Change log
 
-- 2026-10-22 — Eighth review: appeal-safe retention, durable participation marks, one documented lock order (two more cycles removed), sync races closed with a server clear mark, cited evidence rendered, deadlines through reminders/pushes/admin paths with claim recovery and a question reserve, detector phrase table, life-context limit in the UI, contact-sharing gate everywhere with request-vs-activation consent, cron auth in every environment, schema null handling, per-account budget attribution, recent-conversation semantics. Migration 0015. 172 tests.
+- 2026-10-22 — Eighth review: appeal-safe retention, durable participation marks, one documented lock order (two more cycles removed), sync races closed with a server clear mark, cited evidence rendered, deadlines through reminders/pushes/admin paths with claim recovery and a question reserve, detector phrase table, life-context limit in the UI, contact-sharing gate everywhere with request-vs-activation consent, cron auth in every environment, schema null handling, per-account budget attribution, recent-conversation semantics. Migration 0015. 225 tests.
 
 - 2026-10-21 — Seventh review: private declines with shared expiry, connection state preserved on repeats, reflection shows real connection state, complete clearing with report evidence snapshots, delivery-time permission re-check, scoped friends-tier screening and hints, detector rewrite, end-to-end deadlines, chat sync module, onboarding validation, metrics/appeal/unsubscribe correctness, NO KEY UPDATE lock order, safe duplicate sends, OTP allowlist, chats-vs-friends stats, model budget. Migration 0014. 152 tests.
 
