@@ -3,7 +3,7 @@
 // card (react-dom/server) so the UI assertions are real markup, not assumptions.
 import { describe, it, expect, vi, afterAll } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { admin, makeUser, deleteUser, openSessionNow, openConversation, resetQueue, LEFT, RIGHT, MIXED, type TestUser } from "./helpers";
+import { makeUser, deleteUser, openSessionNow, openConversation, resetQueue, LEFT, RIGHT, MIXED, type TestUser } from "./helpers";
 import { undecidedRecent, reflectConnection, type RecentRow } from "@/lib/connection-state";
 
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: () => undefined, refresh: () => undefined }), redirect: () => undefined, notFound: () => undefined }));

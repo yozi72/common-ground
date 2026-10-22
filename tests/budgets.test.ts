@@ -3,7 +3,7 @@
 // through an intercepted client (no network) and reserves usage with
 // take_model_budget. Account ids travel as server metadata only.
 import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
-import { setModelClientForTests, moderate, GatewayError, type ModelRequest } from "@/lib/ai/gateway";
+import { setModelClientForTests, moderate, type ModelRequest } from "@/lib/ai/gateway";
 import { processPendingBatch } from "@/lib/workers/moderation";
 import { generateNextQuestion } from "@/lib/workers/questions";
 import { admin, makeUser, deleteUser, openSessionNow, openConversation, resetQueue, LEFT, RIGHT, type TestUser } from "./helpers";

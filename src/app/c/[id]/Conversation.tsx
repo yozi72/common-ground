@@ -299,6 +299,14 @@ export function Conversation({ conversationId, myParticipantId, myAlias, peerAli
       {isFriend && conv.status === "ended" && (
         <p className="notice notice-warn text-sm" role="status">{conv.end_reason === "blocked" ? "This conversation was ended with a block." : "This chat has ended. No new messages can be sent; what's here stays readable for 30 days."}</p>
       )}
+      {conv.status === "ended" && pending.some((p) => ["revise", "blocked"].includes(p.status)) && (
+        // decided messages stay appealable after the chat ended; nothing can be sent any more
+        <section className="space-y-2" aria-label="Your held messages">
+          {pending.filter((p) => ["revise", "blocked"].includes(p.status)).map((p) => (
+            <PendingItem key={p.id} p={p} now={now} onAction={(id, action, note) => api(`/api/messages/${id}`, { action, note }).then(load)} />
+          ))}
+        </section>
+      )}
       {isFriend && conv.status !== "ended" && !openQuestion && (
         <div className="flex justify-center">
           <button className="btn btn-secondary text-sm" onClick={async () => { const r = await api(`/api/conversations/${conversationId}`, { action: "question" }); if (r && !r.created) setError("No new question right now; try again in a bit."); await load(); }}>Give us a question</button>
