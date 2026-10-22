@@ -41,8 +41,9 @@ describe("consent events describe the actual action", () => {
     await admin().from("connections").update({ friend_requested_at: new Date(Date.now() - 8 * 86400_000).toISOString() }).eq("id", connectionId);
     await a.client.rpc("request_friend", { p_connection: connectionId });
     expect((await b.client.rpc("respond_friend_request", { p_connection: connectionId, p_accept: true })).data).toBe("friends");
-    expect(await events(b)).toEqual(["contact_sharing_response:false", "contact_sharing_response:true", "contact_sharing:true"]);
-    expect(await events(a)).toEqual(["contact_sharing_request:true", "contact_sharing_request:true", "contact_sharing:true"]);
+    // rows written in one statement share created_at, so compare as sets
+    expect((await events(b)).sort()).toEqual(["contact_sharing:true", "contact_sharing_response:false", "contact_sharing_response:true"]);
+    expect((await events(a)).sort()).toEqual(["contact_sharing:true", "contact_sharing_request:true", "contact_sharing_request:true"]);
     // withdrawal by the one who ends the friendship; "ended" for the other person
     await a.client.rpc("remove_friend", { p_connection: connectionId });
     expect((await events(a)).at(-1)).toBe("contact_sharing:false");

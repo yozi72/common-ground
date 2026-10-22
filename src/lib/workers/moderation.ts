@@ -27,7 +27,7 @@ import { Deadline } from "./deadline";
 
 type PendingRow = {
   id: string; conversation_id: string; sender_participant_id: string; kind: "chat" | "answer";
-  question_id: string | null; body: string; attempts: number; claim_token: string;
+  question_id: string | null; body: string; attempts: number; claim_token: string; created_at: string;
 };
 
 export const CLAIM_LEASE_SECONDS = 75;      // ≥ gateway timeout (25 s) × 2 tries + margin
@@ -48,7 +48,9 @@ export async function processPendingBatch(limit = 10, deadline: Deadline = Deadl
     const n = Math.min(BATCH, limit, Math.max(1, Math.floor(deadline.remainingMs() / TYPICAL_MESSAGE_MS)));
     const { data, error } = await admin.rpc("claim_pending", { p_limit: n, p_lease_seconds: CLAIM_LEASE_SECONDS });
     if (error) throw new Error(`claim_pending: ${error.message}`);
-    const rows = (data ?? []) as PendingRow[];
+    // the claim's UPDATE returns rows in storage order; process oldest first so a sender's earlier message
+    // is never starved by a later one (and a per-account budget goes to the older message)
+    const rows = ((data ?? []) as PendingRow[]).slice().sort((x, y) => x.created_at.localeCompare(y.created_at));
     if (!rows.length) break;
     for (let i = 0; i < rows.length; i++) {
       if (deadline.remainingMs() <= MIN_START_MS) {

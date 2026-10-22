@@ -1613,7 +1613,7 @@ describe("audit regressions (2026-10-21)", () => {
     const { a, conv } = await chattingPair("dl-a", "dl-b");
     const { data: pid } = await a.client.rpc("submit_message", { p_conversation: conv, p_client_send_id: "dl-1", p_body: "later" });
     const out = await processBatchWithDeadline(20, Deadline.in(0));
-    expect(out).toEqual({ processed: 0, deferred: 0, released: 0 });  // nothing claimed when there is no time
+    expect(out).toEqual({ processed: 0, deferred: 0, released: 0, budgetDeferred: 0 });  // nothing claimed when there is no time
     const { data: claimed } = await admin().rpc("claim_pending", { p_limit: 10 });
     const row = claimed!.find((r: { id: string }) => r.id === pid)!;
     expect(row.attempts).toBe(1);

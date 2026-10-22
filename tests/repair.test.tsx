@@ -309,8 +309,10 @@ describe("6. model-budget exhaustion is its own outcome", () => {
   it("per-account and global exhaustion wait for the reset without attempts or human review; others pass; a provider failure is different", async () => {
     process.env.AI_PROVIDER = "anthropic"; process.env.ANTHROPIC_API_KEY = "test-only"; setModelClientForTests(client);
     await setCfg("model_calls_per_day_per_account", 1);
-    const { a, b, conv } = await chatting("bx1");             // the opening round used the bank? no: provider path, so clear usage first
+    const { a, b, conv } = await chatting("bx1");
     await admin().from("model_usage").delete().in("account_id", [a.id, b.id]);
+    // the pending queue is shared with every earlier test file: leftovers must not be claimed in this batch
+    await admin().from("pending_messages").update({ status: "cancelled", last_error: "test cleanup" }).eq("status", "pending");
     const { data: p1 } = await a.client.rpc("submit_message", { p_conversation: conv, p_client_send_id: "bx-1", p_body: "one" });
     const { data: p2 } = await a.client.rpc("submit_message", { p_conversation: conv, p_client_send_id: "bx-2", p_body: "two" });
     const { data: p3 } = await b.client.rpc("submit_message", { p_conversation: conv, p_client_send_id: "bx-3", p_body: "from b" });

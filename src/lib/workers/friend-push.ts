@@ -72,7 +72,8 @@ export async function sendFriendMessagePushes(limit = 20, deps: FriendPushDeps =
     const payload = JSON.stringify({ title: "Common Ground", body: "You have a new message.", url: row.conversation_id ? `${env.siteUrl()}/c/${row.conversation_id}` : `${env.siteUrl()}/connections`, tag: `friend-${row.conversation_id ?? "x"}` });
     let aborted: string | null = null;
     let outOfTime = false;
-    let started = 0;   // sends started in THIS run: only a run that started something counts as an attempt
+    let started = 0;        // sends started in THIS run
+    let failedThisRun = false;   // a genuine failure or an uncertain send in THIS run: only then does the run count as an attempt
     for (const s of subs) {
       if (deliveries[s.id]?.status === "sent") continue; // already delivered on a previous attempt
       if (!isAllowedPushEndpoint(s.endpoint)) { await admin.from("push_subscriptions").update({ disabled_at: new Date().toISOString() }).eq("id", s.id); continue; }
@@ -90,7 +91,7 @@ export async function sendFriendMessagePushes(limit = 20, deps: FriendPushDeps =
         if (e instanceof DeadlineError) {
           // started, outcome unknown: recorded as an attempt, retried like a failure (the provider may have delivered)
           deliveries[s.id] = { status: "uncertain", attempts, error: "deadline reached during send; delivery uncertain" };
-          outOfTime = true; break;
+          failedThisRun = true; outOfTime = true; break;
         }
         const status = (e as { statusCode?: number }).statusCode;
         const msg = `push ${status ?? ""} ${(e as Error).message}`.trim();
@@ -99,14 +100,17 @@ export async function sendFriendMessagePushes(limit = 20, deps: FriendPushDeps =
           deliveries[s.id] = { status: "gone", attempts, error: msg };
         } else {
           deliveries[s.id] = { status: "failed", attempts, error: msg };
+          failedThisRun = true;
         }
       }
     }
     if (aborted) { out.cancelled++; continue; } // the row's state was changed by someone else; nothing to overwrite
-    // Out of time before anything started in this run: hand the claim back untouched (no attempt consumed).
-    // Out of time after a genuine failure or an uncertain send: the run counts as an attempt (bounded retries,
-    // backoff) so repeated partial runs cannot exceed the retry cap; devices not reached are tried first next time.
-    if (outOfTime && started === 0) { if ((await release()) === "queued") out.released++; else out.cancelled++; continue; }
+    // Out of time with no genuine failure in this run (nothing started, or only successes): hand the claim back
+    // with the sent devices recorded and no attempt consumed. Out of time after a genuine failure or an
+    // uncertain send: the run counts as an attempt (bounded retries, backoff) so repeated partial runs cannot
+    // exceed the retry cap; devices not reached are tried first next time.
+    if (outOfTime && !failedThisRun) { if ((await release()) === "queued") out.released++; else out.cancelled++; continue; }
+    void started;
     const states = Object.values(deliveries);
     const notReached = subs.filter((d) => !deliveries[d.id] && isAllowedPushEndpoint(d.endpoint));
     const transient = states.filter((d) => d.status === "failed" || d.status === "uncertain");
