@@ -46,7 +46,8 @@ export async function generateNextQuestion(conversationId: string, phase: "openi
   const { data: profiles } = await admin.from("profiles").select("life_context, share_context_with_prompts").in("account_id", accountIds);
   const recent = (recentRows ?? []).reverse().map((m) => ({ alias: aliasOf.get(m.sender_participant_id) ?? "Someone", body: m.body }));
 
-  const q = await generateQuestion(buildQuestionInput({ phase, seq: (conv.questions_asked ?? 0) + 1, profiles: profiles ?? [], previous, skipped, recent }), opts);
+  // a shared question is attributed to both participants for per-account limits (internal metadata only)
+  const q = await generateQuestion(buildQuestionInput({ phase, seq: (conv.questions_asked ?? 0) + 1, profiles: profiles ?? [], previous, skipped, recent }), { ...opts, accounts: accountIds });
 
   const { data: id, error } = await admin.rpc("insert_question", {
     p_conversation: conversationId,

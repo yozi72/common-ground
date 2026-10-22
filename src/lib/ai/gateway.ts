@@ -20,7 +20,11 @@ export class GatewayError extends Error {
   constructor(message: string, public readonly retryable = true, public readonly refusal = false, public readonly outOfTime = false) { super(message); }
 }
 
-export type CallOpts = { deadlineMs?: number };   // wall-clock budget left for this call, including retries
+// deadlineMs: wall-clock budget left for this call, including retries.
+// accounts: internal attribution for per-account usage limits (the sender for
+// moderation, both participants for a shared question). Server metadata only:
+// never placed in a prompt and never returned to a client.
+export type CallOpts = { deadlineMs?: number; accounts?: string[] };
 export const MODEL_TIMEOUT_MS = 25_000;
 const MIN_CALL_MS = 4_000;
 
@@ -199,37 +203,64 @@ export async function assessConnectionReadiness(input: {
 
 let anthropic: Anthropic | null = null;
 
+// The provider call behind callAnthropic. Tests replace it with an intercepted
+// client (setModelClientForTests) so the real gateway and worker paths run
+// without any network; production never changes it.
+export type ModelRequest = { system: string; user: string; maxTokens: number; model: string; timeout: number; maxRetries: number };
+export type ModelResponse = { text: string; model: string; stopReason?: "end_turn" | "max_tokens" | "refusal"; refusalCategory?: string };
+export type ModelClient = (req: ModelRequest) => Promise<ModelResponse>;
+let modelClient: ModelClient | null = null;
+export function setModelClientForTests(client: ModelClient | null) {
+  if (!env.isAutomatedTest()) throw new Error("setModelClientForTests is for automated tests only");
+  modelClient = client;
+}
+
+async function sdkClient(req: ModelRequest): Promise<ModelResponse> {
+  anthropic ??= new Anthropic({ apiKey: env.anthropicApiKey()!, maxRetries: 1, timeout: MODEL_TIMEOUT_MS }); // defaults; each call passes its own budget
+  // Thinking is always on for current models; `effort: "low"` keeps these short
+  // classification calls fast. Thinking tokens count toward max_tokens, hence the headroom.
+  const res = await anthropic.beta.messages.create({
+    model: req.model,
+    max_tokens: Math.max(req.maxTokens, 4000),
+    output_config: { effort: "low" },
+    betas: ["server-side-fallback-2026-07-01"],
+    fallbacks: "default",
+    system: [{ type: "text", text: req.system, cache_control: { type: "ephemeral" } }],
+    messages: [{ role: "user", content: req.user }],
+  }, { timeout: req.timeout, maxRetries: req.maxRetries });
+  if (res.stop_reason === "refusal") return { text: "", model: req.model, stopReason: "refusal", refusalCategory: res.stop_details?.category ?? undefined };
+  if (res.stop_reason === "max_tokens") return { text: "", model: req.model, stopReason: "max_tokens" };
+  const text = res.content.find((c) => c.type === "text");
+  return { text: text && text.type === "text" ? text.text : "", model: (res as { model?: string }).model ?? req.model, stopReason: "end_turn" };
+}
+
 // One model call bounded by the caller's remaining budget. Returns the text and
 // the model that actually answered (server-side fallback may differ from the one asked for).
+//
+// Usage limits: take_model_budget reserves one call against the daily global
+// limit for the task and, when a per-account limit is configured, against every
+// attributed account. A rejected request reserves nothing (it never happened);
+// a reservation that is taken and then fails at the provider still counts.
+// When a per-account limit is enabled, a call without attribution is refused
+// rather than silently unlimited.
 async function callAnthropic(system: string, user: string, maxTokens: number, model: string = env.anthropicModel(), task: "moderation" | "questions" = "moderation", opts: CallOpts = {}): Promise<{ text: string; model: string }> {
   const key = env.anthropicApiKey();
   if (!key) throw new GatewayError("ANTHROPIC_API_KEY not configured", false);
   const budget = callBudget(opts.deadlineMs);
   if (!budget) throw new GatewayError("no time left for a model call before the deadline", true, false, true);
-  // configurable daily usage limit; exhaustion holds messages (never bypasses moderation)
-  const { data: allowed, error: budgetErr } = await supabaseAdmin().rpc("take_model_budget", { p_task: task });
+  const accounts = (opts.accounts ?? []).filter(Boolean);
+  const { data: allowed, error: budgetErr } = await supabaseAdmin().rpc("take_model_budget", { p_task: task, p_accounts: accounts.length ? accounts : null });
   if (budgetErr) throw new GatewayError(`model budget check failed: ${budgetErr.message}`, true);
   if (allowed === false) throw new GatewayError(`model usage limit reached for ${task} today`, true);
-  anthropic ??= new Anthropic({ apiKey: key, maxRetries: 1, timeout: MODEL_TIMEOUT_MS }); // defaults; each call passes its own budget
+  const client = modelClient ?? sdkClient;
   try {
-    // Thinking is always on for current models; `effort: "low"` keeps these short
-    // classification calls fast. Thinking tokens count toward max_tokens, hence the headroom.
-    const res = await anthropic.beta.messages.create({
-      model,
-      max_tokens: Math.max(maxTokens, 4000),
-      output_config: { effort: "low" },
-      betas: ["server-side-fallback-2026-07-01"],
-      fallbacks: "default",
-      system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],
-      messages: [{ role: "user", content: user }],
-    }, { timeout: budget.timeout, maxRetries: budget.maxRetries });
-    if (res.stop_reason === "refusal") {
-      throw new GatewayError(`model declined to assess (${res.stop_details?.category ?? "unspecified"})`, false, true);
+    const res = await client({ system, user, maxTokens, model, timeout: budget.timeout, maxRetries: budget.maxRetries });
+    if (res.stopReason === "refusal") {
+      throw new GatewayError(`model declined to assess (${res.refusalCategory ?? "unspecified"})`, false, true);
     }
-    if (res.stop_reason === "max_tokens") throw new GatewayError("model output truncated");
-    const text = res.content.find((c) => c.type === "text");
-    if (!text || text.type !== "text") throw new GatewayError("empty model response");
-    return { text: text.text, model: (res as { model?: string }).model ?? model };
+    if (res.stopReason === "max_tokens") throw new GatewayError("model output truncated");
+    if (!res.text) throw new GatewayError("empty model response");
+    return { text: res.text, model: res.model ?? model };
   } catch (e) {
     if (e instanceof GatewayError) throw e;
     if (e instanceof Anthropic.AuthenticationError || e instanceof Anthropic.BadRequestError) {

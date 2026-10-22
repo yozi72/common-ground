@@ -92,8 +92,11 @@ async function processOne(row: PendingRow, deadline: Deadline, deps: ModerationD
     if (allowedErr) throw new Error(`thread_contact_allowed: ${allowedErr.message}`);
     const contactAllowed = allowed === true;
     const detectorHits = runDetectors(row.body, recent.filter((r) => r.fromSender).map((r) => r.body));
+    // usage attribution: the sender (internal metadata for per-account limits; never in the prompt)
+    const { data: senderRow } = await admin.from("participants").select("account_id").eq("id", row.sender_participant_id).maybeSingle();
+    const accounts = senderRow?.account_id ? [senderRow.account_id as string] : [];
 
-    const result = await mod({ body: row.body, kind: row.kind, recent, detectorHits, contactAllowed }, { deadlineMs: deadline.remainingMs() - 1000 });
+    const result = await mod({ body: row.body, kind: row.kind, recent, detectorHits, contactAllowed }, { deadlineMs: deadline.remainingMs() - 1000, accounts });
     // In a continuing chat, a held message about the sender's own contact details gets
     // the way to unlock sharing. Never for blocks, holds, or anything beyond identity.
     if (isThread && !contactAllowed && result.decision === "revise" && categoriesAreIdentityOnly(result.categories) && hitsAreIdentifying(result.detectorHits)) {
