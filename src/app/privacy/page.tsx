@@ -14,7 +14,8 @@ export default function Privacy() {
         <h2 className="font-medium text-lg">What we keep and for how long</h2>
         <ul className="list-disc pl-5">
           <li>Delivered messages in a session with a new person: deleted 30 days after that conversation ends.</li>
-          <li>Delivered messages in a chat you both chose to keep: kept while the chat is open, until either of you clears the history; deleted 30 days after the chat ends.</li>
+          <li>Delivered messages in a chat you both chose to keep: kept while the chat is open. Either of you can clear the chat's history, which removes the delivered messages, shared questions and answers for both of you right away; 30 days after a chat ends, everything left is deleted.</li>
+          <li>Clearing is not complete erasure: if a report was filed, a copy of what the reporter could see at the time is kept for safety review only (not visible to participants) and deleted with the report, up to a year after it is resolved. Moderation records keep the decision but not the delivered text.</li>
           <li>Held or blocked messages: deleted after 7 days (longer if under appeal).</li>
           <li>Reports: kept up to a year for safety review.</li>
           <li>Waiting-list entries: deleted 90 days after they end. Aggregate usage counters (joins, waits, deliveries; never message content or answers): kept up to a year.</li>

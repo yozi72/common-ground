@@ -21,7 +21,7 @@ export function buildQuestionInput(args: {
   };
 }
 
-export async function generateNextQuestion(conversationId: string, phase: "opening" | "mid") {
+export async function generateNextQuestion(conversationId: string, phase: "opening" | "mid", opts: { deadlineMs?: number } = {}) {
   const admin = supabaseAdmin();
 
   const [{ data: conv }, { data: questions }, { data: participants }, { data: aliases }, { data: recentRows }] = await Promise.all([
@@ -46,7 +46,7 @@ export async function generateNextQuestion(conversationId: string, phase: "openi
   const { data: profiles } = await admin.from("profiles").select("life_context, share_context_with_prompts").in("account_id", accountIds);
   const recent = (recentRows ?? []).reverse().map((m) => ({ alias: aliasOf.get(m.sender_participant_id) ?? "Someone", body: m.body }));
 
-  const q = await generateQuestion(buildQuestionInput({ phase, seq: (conv.questions_asked ?? 0) + 1, profiles: profiles ?? [], previous, skipped, recent }));
+  const q = await generateQuestion(buildQuestionInput({ phase, seq: (conv.questions_asked ?? 0) + 1, profiles: profiles ?? [], previous, skipped, recent }), opts);
 
   const { data: id, error } = await admin.rpc("insert_question", {
     p_conversation: conversationId,

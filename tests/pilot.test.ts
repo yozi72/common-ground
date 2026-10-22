@@ -391,8 +391,9 @@ describe("sending and moderation", () => {
     await a.client.rpc("submit_message", { p_conversation: conv, p_client_send_id: "m-after", p_body: "back now" });
     await admin().from("pending_messages").update({ next_attempt_at: new Date().toISOString() }).eq("conversation_id", conv);
     await processPendingBatch();
+    const { data: dbg } = await admin().from("pending_messages").select("client_send_id, status, attempts, last_error, next_attempt_at").eq("conversation_id", conv);
     const { data: seen2 } = await b.client.from("approved_messages").select("body").eq("conversation_id", conv);
-    expect(seen2!.map((m) => m.body)).toEqual(["back now"]);
+    expect(seen2!.map((m) => m.body), JSON.stringify(dbg)).toEqual(["back now"]);
   });
 
   it("falls into human review after repeated failures", async () => {
@@ -600,7 +601,7 @@ describe("review regressions (2026-10-20)", () => {
     await a.client.rpc("leave_conversation", { p_conversation: conv });
     await admin().from("conversations").update({ ended_at: new Date(Date.now() - 31 * 86400_000).toISOString() }).eq("id", conv);
     const { data: out } = await admin().rpc("purge_retention");
-    expect(out.custom_answers).toBeGreaterThanOrEqual(1);
+    expect(out.answers).toBeGreaterThanOrEqual(1);   // answer rows are deleted with the messages now
     const { data: ans } = await admin().from("question_answers").select("custom_text").eq("conversation_id", conv);
     expect(ans!.every((x) => x.custom_text === null)).toBe(true);
     const { data: msgs } = await admin().from("approved_messages").select("id").eq("conversation_id", conv);
@@ -1018,7 +1019,7 @@ describe("stats and badges", () => {
     const c = await user("st-c", MIXED);
     const conv = await openConversation(a, b);
     let { data: s0 } = await a.client.rpc("my_stats");
-    expect(s0[0]).toMatchObject({ people: 0, conversations: 0, friends: 0 });
+    expect(s0[0]).toMatchObject({ people: 0, conversations: 0, chats: 0, friends: 0 });
     const qid = await generateNextQuestion(conv, "opening");
     await a.client.rpc("answer_with_choice", { p_question: qid, p_choice: 0 });
     await b.client.rpc("answer_with_choice", { p_question: qid, p_choice: 1 });
@@ -1033,7 +1034,7 @@ describe("stats and badges", () => {
     await a.client.rpc("set_connection_decision", { p_conversation: conv, p_decision: true });
     await b.client.rpc("set_connection_decision", { p_conversation: conv, p_decision: true });
     const { data: s1 } = await a.client.rpc("my_stats");
-    expect(s1[0].friends).toBe(1);
+    expect(s1[0]).toMatchObject({ chats: 1, friends: 0 });   // keep-talking is a chat; friends means contact sharing
   });
 });
 
@@ -1807,10 +1808,11 @@ describe("chats with two tiers (2026-10-21)", () => {
     await a.client.rpc("request_friend", { p_connection: connectionId });
     const { data: r } = await b.client.rpc("respond_friend_request", { p_connection: connectionId, p_accept: false });
     expect(r).toBe("declined");
-    expect(await overview(a)).toMatchObject({ tier: "chat", request_from_me: false, request_available: false });
+    // to the requester a declined request is indistinguishable from an unanswered one
+    expect(await overview(a)).toMatchObject({ tier: "chat", request_from_me: true, request_available: false });
     const { data: tellA } = await a.client.from("notifications").select("kind").in("kind", ["friends", "friend_declined"]);
     expect(tellA).toEqual([]);                                      // the asker is not told
-    expect((await a.client.rpc("request_friend", { p_connection: connectionId })).error?.code).toBe("P0002");
+    expect((await a.client.rpc("request_friend", { p_connection: connectionId })).data).toBe("pending");   // same answer as before the decline
     expect((await b.client.rpc("request_friend", { p_connection: connectionId })).error?.code).toBe("P0002");
     await admin().from("connections").update({ friend_requested_at: new Date(Date.now() - 8 * 86400_000).toISOString() }).eq("id", connectionId);
     expect(await overview(b)).toMatchObject({ request_available: true });
@@ -1844,8 +1846,10 @@ describe("chats with two tiers (2026-10-21)", () => {
     await a.client.rpc("remove_friend", { p_connection: connectionId });
     await a.client.rpc("set_connection_decision", { p_conversation: conv, p_decision: true });
     await b.client.rpc("set_connection_decision", { p_conversation: conv, p_decision: true });
-    expect(await overview(a)).toMatchObject({ status: "active", tier: "chat", request_available: true });
+    expect(await overview(a)).toMatchObject({ status: "active", tier: "chat", request_available: false });   // the request cooldown survives the restore
     expect((await overview(a)).friends_since).toBeNull();
+    await admin().from("connections").update({ friend_requested_at: new Date(Date.now() - 8 * 86400_000).toISOString() }).eq("id", connectionId);
+    expect((await overview(a)).request_available).toBe(true);
   });
 
   it("recent conversations list the decision and reflection state, hide blocked ones, and point at the chat once both said yes", async () => {
@@ -1898,5 +1902,312 @@ describe("chats with two tiers (2026-10-21)", () => {
     const { data: purged } = await admin().rpc("purge_retention");
     expect(purged.friend_messages).toBeGreaterThanOrEqual(1);
     expect((await a.client.from("approved_messages").select("id").eq("conversation_id", tid)).data).toEqual([]);
+  });
+});
+
+describe("seventh review regressions (2026-10-21)", () => {
+  const AUTO = { p_categories: [], p_user_explanation: null, p_suggested_revision: null, p_confidence: 0.9, p_detector_hits: [], p_provider: "mock", p_model: "mock", p_raw_valid: true, p_latency_ms: 5 };
+  async function keepTalking(tagA: string, tagB: string) {
+    const a = await user(tagA, LEFT);
+    const b = await user(tagB, RIGHT);
+    const conv = await openConversation(a, b);
+    await finishOpeningRound(a, b, conv, generateNextQuestion);
+    await a.client.rpc("leave_conversation", { p_conversation: conv });
+    await a.client.rpc("set_connection_decision", { p_conversation: conv, p_decision: true });
+    await b.client.rpc("set_connection_decision", { p_conversation: conv, p_decision: true });
+    const { data: conns } = await a.client.rpc("friend_threads_overview");
+    const { data: tid } = await a.client.rpc("open_friend_thread", { p_connection: conns![0].connection_id });
+    return { a, b, conv, connectionId: conns![0].connection_id as string, tid: tid as string };
+  }
+  const overview = async (u: TestUser) => (await u.client.rpc("friend_threads_overview")).data![0];
+  const visible = (o: Record<string, unknown>) => ({ tier: o.tier, request_from_me: o.request_from_me, request_for_me: o.request_for_me, request_available: o.request_available, friends_since: o.friends_since });
+
+  it("2. a declined request is indistinguishable from an unanswered one; both expire together; nothing leaks", async () => {
+    const { a, b, connectionId } = await keepTalking("pv-a", "pv-b");
+    await a.client.rpc("request_friend", { p_connection: connectionId });
+    const unanswered = visible(await overview(a));
+    const { data: r } = await b.client.rpc("respond_friend_request", { p_connection: connectionId, p_accept: false });
+    expect(r).toBe("declined");
+    expect(visible(await overview(a))).toEqual(unanswered);                               // overview: identical
+    expect((await a.client.rpc("request_friend", { p_connection: connectionId })).data).toBe("pending");   // response body: identical
+    const { data: notes } = await a.client.from("notifications").select("kind").in("kind", ["friends", "friend_declined", "friend_request"]);
+    expect(notes).toEqual([]);                                                            // no notification
+    const direct = await a.client.from("connections").select("friend_request_declined_at");
+    expect(direct.data ?? []).toEqual([]);                                                // no direct table access
+    expect(JSON.stringify(await a.client.rpc("thread_state", { p_conversation: (await overview(a)).conversation_id }))).not.toContain("declined");
+    expect((await overview(b)).request_for_me).toBe(false);                             // the decline is honored on their side
+    expect((await b.client.rpc("respond_friend_request", { p_connection: connectionId, p_accept: true })).error?.code).toBe("P0001");
+    // cooldown: nobody can ask for 7 days, then both can; an unanswered request expires the same way
+    expect((await b.client.rpc("request_friend", { p_connection: connectionId })).error?.code).toBe("P0002");
+    await admin().from("connections").update({ friend_requested_at: new Date(Date.now() - 8 * 86400_000).toISOString() }).eq("id", connectionId);
+    expect(visible(await overview(a))).toMatchObject({ request_from_me: false, request_available: true });
+    expect(visible(await overview(b))).toMatchObject({ request_for_me: false, request_available: true });
+    expect((await b.client.rpc("request_friend", { p_connection: connectionId })).data).toBe("pending");    // b asks this time
+    expect((await overview(a)).request_for_me).toBe(true);
+    await admin().from("connections").update({ friend_requested_at: new Date(Date.now() - 8 * 86400_000).toISOString() }).eq("id", connectionId);
+    expect((await overview(a)).request_for_me).toBe(false);                             // unanswered → expired, not stuck
+    expect((await a.client.rpc("respond_friend_request", { p_connection: connectionId, p_accept: true })).error?.code).toBe("P0001");
+    expect((await overview(b)).request_available).toBe(true);
+    // concurrent duplicate requests and a request racing an accept stay consistent
+    await b.client.rpc("request_friend", { p_connection: connectionId });
+    const [x, y, z] = await Promise.all([b.client.rpc("request_friend", { p_connection: connectionId }), b.client.rpc("request_friend", { p_connection: connectionId }), a.client.rpc("respond_friend_request", { p_connection: connectionId, p_accept: true })]);
+    expect([x.data, y.data].every((v) => v === "pending" || v === "friends")).toBe(true);
+    expect(z.data).toBe("friends");
+    expect((await overview(a)).tier).toBe("friend");
+    const { data: fn } = await b.client.from("notifications").select("kind").eq("kind", "friends");
+    expect(fn).toHaveLength(1);
+  });
+
+  it("3. an active connection keeps its tier, request and cooldown through repeated and new keep-talking decisions", async () => {
+    const { a, b, conv, connectionId } = await keepTalking("kp-a", "kp-b");
+    await a.client.rpc("request_friend", { p_connection: connectionId });
+    await b.client.rpc("respond_friend_request", { p_connection: connectionId, p_accept: true });
+    const before = (await admin().from("notifications").select("id", { count: "exact", head: true }).eq("kind", "connected")).count;
+    const { data: again } = await a.client.rpc("set_connection_decision", { p_conversation: conv, p_decision: true });
+    expect(again).toMatchObject({ status: "connected", connection_id: connectionId });
+    expect((await overview(a)).tier).toBe("friend");
+    expect((await admin().from("notifications").select("id", { count: "exact", head: true }).eq("kind", "connected")).count).toBe(before);
+    // meeting the same person again: a new live conversation, both say yes → same connection, still friends
+    const conv2 = await openConversation(a, b);
+    await a.client.rpc("leave_conversation", { p_conversation: conv2 });
+    await a.client.rpc("set_connection_decision", { p_conversation: conv2, p_decision: true });
+    const { data: r2 } = await b.client.rpc("set_connection_decision", { p_conversation: conv2, p_decision: true });
+    expect(r2).toMatchObject({ status: "connected", connection_id: connectionId });
+    expect((await overview(a)).tier).toBe("friend");
+    expect((await admin().from("connections").select("id", { count: "exact", head: true }).or(`account_a.eq.${a.id},account_b.eq.${a.id}`)).count).toBe(1);
+    // withdrawing while connected is refused (end the chat instead)
+    expect((await a.client.rpc("set_connection_decision", { p_conversation: conv, p_decision: false })).error?.code).toBe("P0001");
+    expect((await overview(a)).status).toBe("active");
+    // a declined request's cooldown survives end + restore
+    await a.client.rpc("remove_friend", { p_connection: connectionId });
+    await a.client.rpc("set_connection_decision", { p_conversation: conv2, p_decision: true });
+    await b.client.rpc("set_connection_decision", { p_conversation: conv2, p_decision: true });
+    expect((await overview(a))).toMatchObject({ status: "active", tier: "chat" });
+    await b.client.rpc("request_friend", { p_connection: connectionId });
+    await a.client.rpc("respond_friend_request", { p_connection: connectionId, p_accept: false });
+    await a.client.rpc("remove_friend", { p_connection: connectionId });
+    await a.client.rpc("set_connection_decision", { p_conversation: conv2, p_decision: true });
+    await b.client.rpc("set_connection_decision", { p_conversation: conv2, p_decision: true });
+    expect((await b.client.rpc("request_friend", { p_connection: connectionId })).error?.code).toBe("P0002");   // still cooling down
+  });
+
+  it("5. clearing removes delivered history, questions and answers; closes questions; keeps the other person's review; snapshots reports", async () => {
+    const { a, b, tid } = await keepTalking("cl-a", "cl-b");
+    await a.client.rpc("submit_message", { p_conversation: tid, p_client_send_id: "cl-1", p_body: "first" });
+    await processPendingBatch();
+    const qid = await generateNextQuestion(tid, "mid");
+    await a.client.rpc("answer_with_choice", { p_question: qid, p_choice: 1 });
+    const { data: bAnswer } = await b.client.rpc("submit_message", { p_conversation: tid, p_client_send_id: "cl-ans", p_body: "my hidden custom answer", p_kind: "answer", p_question: qid });
+    const { data: bChat } = await b.client.rpc("submit_message", { p_conversation: tid, p_client_send_id: "cl-2", p_body: "still being checked" });
+    const { data: aPending } = await a.client.rpc("submit_message", { p_conversation: tid, p_client_send_id: "cl-3", p_body: "mine, unreviewed" });
+    // a report filed before the clear keeps what the reporter could see; cross-conversation ids are dropped
+    const { data: first } = await a.client.from("approved_messages").select("id").eq("conversation_id", tid).single();
+    const { data: rid } = await b.client.rpc("report_peer", { p_conversation: tid, p_reason: "harassment", p_details: "see cited", p_message_ids: [first!.id, "00000000-0000-4000-8000-000000000000"], p_also_block: false });
+    const { data: ev } = await admin().from("report_evidence").select("cited, context").eq("report_id", rid).single();
+    expect(ev!.cited).toHaveLength(1);
+    expect(ev!.cited[0].body).toBe("first");
+    expect((await admin().from("reports").select("message_ids").eq("id", rid).single()).data!.message_ids).toEqual([first!.id]);
+    expect((await b.client.from("report_evidence").select("*")).data ?? []).toEqual([]);   // restricted
+    // clear
+    const { data: n } = await a.client.rpc("clear_thread_history", { p_conversation: tid });
+    expect(n).toBe(1);
+    expect((await b.client.from("approved_messages").select("id").eq("conversation_id", tid)).data).toEqual([]);
+    expect((await b.client.from("question_answers").select("*").eq("conversation_id", tid)).data).toEqual([]);
+    expect((await b.client.from("conversation_questions").select("id").eq("conversation_id", tid)).data).toEqual([]);   // cleared questions are invisible
+    const { data: q } = await admin().from("conversation_questions").select("status, cleared_at").eq("id", qid).single();
+    expect(q!.status).toBe("closed"); expect(q!.cleared_at).not.toBeNull();
+    // the caller's own unreviewed row is cancelled; the other person's is still in review
+    expect((await admin().from("pending_messages").select("status").eq("id", aPending).single()).data!.status).toBe("cancelled");
+    expect((await admin().from("pending_messages").select("status").eq("id", bChat).single()).data!.status).toBe("pending");
+    expect((await admin().from("pending_messages").select("status").eq("id", bAnswer).single()).data!.status).toBe("pending");
+    // delivered bodies in moderation records are redacted for the sender too
+    const { data: mine } = await a.client.from("pending_messages").select("body").eq("client_send_id", "cl-1").single();
+    expect(mine!.body).toBe("[cleared]");
+    // moderation of the other person's rows completes, but nothing from before the clear is delivered or revealed
+    await processPendingBatch();
+    expect((await admin().from("pending_messages").select("status, user_explanation").eq("id", bChat).single()).data).toMatchObject({ status: "cancelled" });
+    expect((await admin().from("pending_messages").select("status").eq("id", bAnswer).single()).data!.status).toBe("cancelled");
+    expect((await admin().from("moderation_decisions").select("id").eq("pending_message_id", bChat)).data).toHaveLength(1);   // review record kept
+    expect((await admin().from("conversation_questions").select("revealed_at").eq("id", qid).single()).data!.revealed_at).toBeNull();
+    expect((await admin().from("approved_messages").select("id").eq("conversation_id", tid)).data).toEqual([]);
+    // a late choice on the cleared question is refused
+    expect((await b.client.rpc("answer_with_choice", { p_question: qid, p_choice: 0 })).error?.code).toBe("P0001");
+    // the report's evidence survived the clear
+    expect((await admin().from("report_evidence").select("cited").eq("report_id", rid).single()).data!.cited[0].body).toBe("first");
+    // new messages after the clear flow normally
+    await b.client.rpc("submit_message", { p_conversation: tid, p_client_send_id: "cl-4", p_body: "after the clear" });
+    await processPendingBatch();
+    expect((await a.client.from("approved_messages").select("body").eq("conversation_id", tid)).data).toEqual([{ body: "after the clear" }]);
+  });
+
+  it("5. ended-chat retention removes questions and answers too", async () => {
+    const { a, connectionId, tid } = await keepTalking("rt-a", "rt-b");
+    const qid = await generateNextQuestion(tid, "mid");
+    await a.client.rpc("answer_with_choice", { p_question: qid, p_choice: 0 });
+    await a.client.rpc("remove_friend", { p_connection: connectionId });
+    await admin().from("conversations").update({ ended_at: new Date(Date.now() - 31 * 86400_000).toISOString() }).eq("id", tid);
+    const { data: r } = await admin().rpc("purge_retention");
+    expect(r.questions).toBeGreaterThanOrEqual(1);
+    expect((await admin().from("conversation_questions").select("id").eq("conversation_id", tid)).data).toEqual([]);
+    expect((await admin().from("question_answers").select("*").eq("conversation_id", tid)).data).toEqual([]);
+  });
+
+  it("6. a result produced under contact permission that no longer holds is not delivered; it is re-moderated", async () => {
+    const { a, b, connectionId, tid } = await keepTalking("cp-a", "cp-b");
+    await a.client.rpc("request_friend", { p_connection: connectionId });
+    await b.client.rpc("respond_friend_request", { p_connection: connectionId, p_accept: true });
+    const { data: pid } = await a.client.rpc("submit_message", { p_conversation: tid, p_client_send_id: "cp-1", p_body: "call me 415-555-0199" });
+    const { data: claimed } = await admin().rpc("claim_pending", { p_limit: 10 });
+    const token = claimed!.find((r: { id: string }) => r.id === pid)!.claim_token as string;
+    // permission changes while the model is thinking (a configuration change, not a removal)
+    await admin().from("connections").update({ tier: "chat" }).eq("id", connectionId);
+    const { data: out } = await admin().rpc("apply_moderation_decision", { p_pending: pid, p_decision: "allow", ...AUTO, p_claim_token: token, p_contact_allowed: true });
+    expect(out).toMatchObject({ skipped: true, reason: "permission changed" });
+    expect((await b.client.from("approved_messages").select("id").eq("conversation_id", tid)).data).toEqual([]);
+    const { data: row } = await admin().from("pending_messages").select("status, claim_token").eq("id", pid).single();
+    expect(row).toEqual({ status: "pending", claim_token: null });
+    await processPendingBatch();                                    // re-moderated under the current permission
+    expect((await admin().from("pending_messages").select("status").eq("id", pid).single()).data!.status).toBe("revise");
+    // a client cannot supply the flag: only the worker's service-role call carries it
+    expect((await a.client.rpc("apply_moderation_decision", { p_pending: pid, p_decision: "allow", ...AUTO, p_contact_allowed: true })).error).not.toBeNull();
+    // block during moderation
+    await admin().from("connections").update({ tier: "friend" }).eq("id", connectionId);
+    const { data: pid2 } = await a.client.rpc("submit_message", { p_conversation: tid, p_client_send_id: "cp-2", p_body: "call me 415-555-0199" });
+    const { data: c2 } = await admin().rpc("claim_pending", { p_limit: 10 });
+    const t2 = c2!.find((r: { id: string }) => r.id === pid2)!.claim_token as string;
+    await b.client.rpc("block_peer", { p_conversation: tid });
+    const { data: out2 } = await admin().rpc("apply_moderation_decision", { p_pending: pid2, p_decision: "allow", ...AUTO, p_claim_token: t2, p_contact_allowed: true });
+    expect(out2).toMatchObject({ skipped: true });
+    expect((await admin().from("approved_messages").select("id").eq("conversation_id", tid)).data).toEqual([]);
+  });
+
+  it("7. the unlock hint only softens identity-only revisions; mixed abuse is blocked without it", async () => {
+    const { a, tid } = await keepTalking("hx-a", "hx-b");
+    await a.client.rpc("submit_message", { p_conversation: tid, p_client_send_id: "hx-1", p_body: "you people are vermin and I will find you, call 415-555-0101" });
+    await processPendingBatch();
+    const { data: p } = await a.client.from("pending_messages").select("status, user_explanation").eq("client_send_id", "hx-1").single();
+    expect(p!.status).toBe("blocked");
+    expect(p!.user_explanation).not.toContain("Become friends");
+  });
+
+  it("10. deadlines: a slow provider is bounded, unprocessed claims are released without an attempt, a short fallback still moves work", async () => {
+    const { a, b, conv } = await (async () => { const a = await user("dl2-a", LEFT); const b = await user("dl2-b", RIGHT); const conv = await openConversation(a, b); await finishOpeningRound(a, b, conv, generateNextQuestion); return { a, b, conv }; })();
+    for (const n of [1, 2, 3]) await a.client.rpc("submit_message", { p_conversation: conv, p_client_send_id: `dl2-${n}`, p_body: `msg ${n}` });
+    // a provider that takes 2 s per call, honoring the budget it is handed (as the gateway does)
+    const { GatewayError } = await import("@/lib/ai/gateway");
+    const slow = async (input: { body: string }, opts: { deadlineMs?: number } = {}) => {
+      if ((opts.deadlineMs ?? Infinity) < 4000) throw new GatewayError("no time left for a model call before the deadline", true, false, true);
+      await new Promise((r) => setTimeout(r, 2000));
+      return { decision: "allow" as const, categories: [], user_explanation: null, suggested_revision: null, confidence: 0.5, provider: "mock" as const, model: "slow-mock", detectorHits: [], rawValid: true, latencyMs: 2000, body: input.body };
+    };
+    const out = await processPendingBatch(10, Deadline.in(9000), { moderate: slow });
+    expect(out.processed).toBeGreaterThanOrEqual(1);
+    expect(out.processed + out.released).toBeLessThanOrEqual(3);     // what was not even claimed stays untouched
+    expect(out.deferred).toBe(0);
+    const { data: rows } = await admin().from("pending_messages").select("status, attempts, claim_token").eq("conversation_id", conv).like("client_send_id", "dl2-%");
+    for (const r of rows!) {
+      if (r.status === "approved") expect(r.attempts).toBe(1);
+      else { expect(r.status).toBe("pending"); expect(r.attempts).toBe(0); expect(r.claim_token).toBeNull(); }   // released, nothing consumed
+    }
+    // the fallback-sized tick (25 s budget) processes the rest with the mock provider
+    const tick = await runTick({ budgetMs: 25_000, source: "test" });
+    expect((tick.moderation as { processed: number }).processed).toBeGreaterThanOrEqual(1);
+    const { data: delivered } = await b.client.from("approved_messages").select("body").eq("conversation_id", conv).like("body", "msg %");
+    expect(delivered!.length).toBe(3);
+    // a due mid-question is generated by the tick even when the worker had no time for the follow-up
+    await admin().from("conversations").update({ active_seconds_since_question: 10_000 }).eq("id", conv);
+    const tick2 = await runTick({ budgetMs: 40_000, source: "test" });
+    expect((tick2.questions as { mid: number }).mid).toBeGreaterThanOrEqual(1);
+  });
+
+  it("12. onboarding inputs are validated against the schema", async () => {
+    const u = await user("ob-a", LEFT, false);
+    const base = { p_age_band: "25-34", p_region: "midwest", p_community: "suburban", p_life_context: ["parent"], p_share_context: true, p_political_answers: LEFT, p_political_nonanswers: {}, p_issue_priorities: [], p_questionnaire_version: 2, p_terms_version: "test" };
+    for (const bad of [
+      { p_life_context: ["<script>alert(1)</script>"] }, { p_life_context: ["parent", "parent"] }, { p_life_context: ["parent", "caregiver", "veteran", "student", "retired", "shift work", "city life"] },
+      { p_region: "mars" }, { p_age_band: "12-17" }, { p_community: "castle" },
+      { p_political_answers: { bogus_key: 0.5 } }, { p_political_nonanswers: { bogus_key: "unsure" } }, { p_issue_priorities: ["bogus"] }, { p_issue_priorities: ["climate", "climate"] },
+      { p_political_answers: [1, 2] }, { p_terms_version: "" },
+    ]) {
+      const r = await u.client.rpc("complete_onboarding", { ...base, ...bad });
+      expect(r.error?.code, JSON.stringify(bad)).toBe("P0001");
+    }
+    expect((await admin().from("accounts").select("onboarding_complete").eq("id", u.id).single()).data!.onboarding_complete).toBe(false);
+    expect((await u.client.rpc("complete_onboarding", { ...base, p_age_band: null, p_political_nonanswers: { climate: "unsure" }, p_political_answers: MIXED })).error).toBeNull();
+    const { data: prof } = await u.client.from("profiles").select("life_context, share_context_with_prompts").eq("account_id", u.id).single();
+    expect(prof).toEqual({ life_context: ["parent"], share_context_with_prompts: true });
+  });
+
+  it("13. metrics come from the service-role path; appeals resolve atomically; unsubscribe reports write failures", async () => {
+    const { data: m, error } = await admin().rpc("metrics_summary", { p_since: "2026-01-01T00:00:00Z" });
+    expect(error).toBeNull(); expect(m).toBeTruthy();
+    expect((await admin().rpc("admin_metrics", { p_since: "2026-01-01T00:00:00Z" })).error).not.toBeNull();   // the wrapper needs a signed-in admin
+    // appeal: a blocked message, appealed, overturned → delivered in the same transaction
+    const { a, b, conv } = await (async () => { const a = await user("ap-a", LEFT); const b = await user("ap-b", RIGHT); const conv = await openConversation(a, b); await finishOpeningRound(a, b, conv, generateNextQuestion); return { a, b, conv }; })();
+    const { data: pid } = await a.client.rpc("submit_message", { p_conversation: conv, p_client_send_id: "ap-1", p_body: "you people are vermin and I will find you" });
+    await processPendingBatch();
+    const { data: appealId } = await a.client.rpc("file_appeal", { p_pending: pid, p_note: "context" });
+    expect((await admin().rpc("resolve_appeal", { p_appeal: "00000000-0000-4000-8000-000000000000", p_status: "overturned", p_note: null, p_resolver: null })).error?.code).toBe("P0001");
+    const { data: res, error: e2 } = await admin().rpc("resolve_appeal", { p_appeal: appealId, p_status: "overturned", p_note: "ok", p_resolver: null });
+    expect(e2).toBeNull(); expect(res.pending_id).toBe(pid);
+    expect((await b.client.from("approved_messages").select("id").eq("pending_message_id", pid)).data).toHaveLength(1);
+    expect((await admin().from("appeals").select("status").eq("id", appealId).single()).data!.status).toBe("overturned");
+    expect((await admin().rpc("resolve_appeal", { p_appeal: appealId, p_status: "upheld", p_note: null, p_resolver: null })).error?.code).toBe("P0001");   // not open any more
+    // unsubscribe: a failing database write is reported, preferences untouched
+    const u = await user("un2-a", LEFT);
+    await u.client.from("reminder_prefs").upsert({ account_id: u.id, email_enabled: true });
+    const t = unsubscribeToken(u.id);
+    const realKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+    process.env.SUPABASE_SERVICE_ROLE_KEY = "not-a-key";
+    try {
+      const res500 = await unsubPost(new Request("http://localhost/api/reminders/unsubscribe", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: `t=${encodeURIComponent(t)}` }));
+      expect(res500.status).toBe(500);
+      expect(await res500.text()).toContain("still on");
+    } finally { process.env.SUPABASE_SERVICE_ROLE_KEY = realKey; }
+    expect((await admin().from("reminder_prefs").select("email_enabled").eq("account_id", u.id).single()).data!.email_enabled).toBe(true);
+  });
+
+  it("14. reveal and moderation share one lock order; duplicate client ids are safe under concurrency", async () => {
+    const a = await user("lk-a", LEFT);
+    const b = await user("lk-b", RIGHT);
+    const conv = await openConversation(a, b);
+    for (let i = 0; i < 4; i++) {
+      const qid = await generateNextQuestion(conv, "opening");
+      const { data: pid } = await a.client.rpc("submit_message", { p_conversation: conv, p_client_send_id: `lk-${i}`, p_body: "custom words", p_kind: "answer", p_question: qid });
+      const { data: claimed } = await admin().rpc("claim_pending", { p_limit: 10 });
+      const token = claimed!.find((r: { id: string }) => r.id === pid)!.claim_token as string;
+      const [x, y] = await Promise.all([
+        b.client.rpc("answer_with_choice", { p_question: qid, p_choice: 0 }),
+        admin().rpc("apply_moderation_decision", { p_pending: pid, p_decision: "allow", ...AUTO, p_claim_token: token }),
+      ]);
+      expect(x.error, "answer").toBeNull(); expect(y.error, "apply").toBeNull();
+      expect((await admin().from("conversation_questions").select("status").eq("id", qid).single()).data!.status).toBe("revealed");
+    }
+    // concurrent duplicate sends: one row, same id, no uniqueness error; another sender can't reuse the id
+    while ((await admin().from("conversations").select("status").eq("id", conv).single()).data!.status === "opening") {
+      const qid = await generateNextQuestion(conv, "opening");
+      await a.client.rpc("answer_with_choice", { p_question: qid, p_choice: 0 });
+      await b.client.rpc("answer_with_choice", { p_question: qid, p_choice: 1 });
+    }
+    const sends = await Promise.all([1, 2, 3].map(() => a.client.rpc("submit_message", { p_conversation: conv, p_client_send_id: "dup-1", p_body: "hello" })));
+    expect(sends.every((s) => s.error === null)).toBe(true);
+    expect(new Set(sends.map((s) => s.data)).size).toBe(1);
+    expect((await admin().from("pending_messages").select("id").eq("conversation_id", conv).eq("client_send_id", "dup-1")).data).toHaveLength(1);
+    expect((await b.client.rpc("submit_message", { p_conversation: conv, p_client_send_id: "dup-1", p_body: "mine" })).error?.code).toBe("P0001");
+    await processPendingBatch();
+    expect((await b.client.from("approved_messages").select("body").eq("conversation_id", conv).eq("body", "hello")).data).toHaveLength(1);
+  });
+
+  it("15. model-usage budget: exhaustion is reported, never bypassed", async () => {
+    await admin().from("policy_config").upsert({ key: "model_calls_per_day_moderation", value: 1 });
+    try {
+      await admin().from("model_usage").delete().eq("task", "moderation");
+      expect((await admin().rpc("take_model_budget", { p_task: "moderation" })).data).toBe(true);
+      expect((await admin().rpc("take_model_budget", { p_task: "moderation" })).data).toBe(false);
+      expect((await admin().rpc("take_model_budget", { p_task: "questions" })).data).toBe(true);   // unlimited by default
+    } finally {
+      await admin().from("policy_config").upsert({ key: "model_calls_per_day_moderation", value: 0 });
+      await admin().from("model_usage").delete().eq("task", "moderation");
+    }
   });
 });

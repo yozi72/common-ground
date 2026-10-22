@@ -33,8 +33,12 @@ export async function POST(req: Request) {
   const accountId = verifyUnsubscribeToken(token);
   if (!accountId) return page("That unsubscribe link isn't valid.", "<p>You can manage reminders under Profile → Reminders after signing in.</p>", site, 400);
   const admin = supabaseAdmin();
-  await admin.from("reminder_prefs").upsert({ account_id: accountId, email_enabled: false, updated_at: new Date().toISOString() }, { onConflict: "account_id" });
-  await admin.from("consent_events").insert({ account_id: accountId, kind: "reminders_email", version: "v1", granted: false });
+  const { error: e1 } = await admin.from("reminder_prefs").upsert({ account_id: accountId, email_enabled: false, updated_at: new Date().toISOString() }, { onConflict: "account_id" });
+  const { error: e2 } = e1 ? { error: null } : await admin.from("consent_events").insert({ account_id: accountId, kind: "reminders_email", version: "v1", granted: false });
+  if (e1 || e2) {
+    console.warn("[unsubscribe] write failed:", (e1 ?? e2)?.message);
+    return page("We couldn't save that.", "<p>Email reminders are still on. Please try the link again in a moment, or turn them off under Profile → Reminders after signing in.</p>", site, 500);
+  }
   return page("Email reminders are off.", "<p>You won't get reminder emails for the conversation hour. You can turn them back on any time under Profile → Reminders.</p>", site, 200);
 }
 

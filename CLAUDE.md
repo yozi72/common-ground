@@ -33,6 +33,10 @@ An anonymous, moderated text-conversation pilot that pairs adults who answered a
 - Moderation results carry the claim token (`apply_moderation_decision(..., p_claim_token)`); human decisions pass `p_provider = 'human'` and no token. Never apply an automated outcome without the token.
 - Clients never write `accounts`, `profiles` (except `timezone_override`) or `consent_events` directly: `complete_onboarding` and `record_consent` are the paths.
 - Internal helper functions are revoked from `authenticated`; anything a client must call needs an explicit grant and its own authorization check.
+- Row locks on `conversations` and `conversation_questions` use `for no key update` in the reveal/delivery paths (FK key-share locks from answer inserts deadlock against `for update`); lock order is conversation → question.
+- Every model call takes the remaining budget (`CallOpts.deadlineMs`); workers pass their `Deadline` through and release claims they cannot start. Never add an unbounded external call to a worker stage.
+- Chat message caches go through `src/lib/chat-sync.ts` (functional merges, persisted gaps, sequence guard); never replace the cache with a snapshot.
+- Clearing a chat must never cancel the other person's submissions or remove review records; evidence for reports lives in `report_evidence`, captured at report time.
 - Push worker updates are conditional on the claim (`finish_push_queue` / `recheck_push_queue`); never write a terminal push status unconditionally.
 - UI: light warm theme, rounded components, one top bar + bottom tab bar (Talk / Chats / Profile [/ Review]), one primary action per screen, no browser `confirm()`/`prompt()`.
 - Lint rules forbid `Date.now()` in render and `setState` directly in effects; use `serverNow()` / deferred effects.

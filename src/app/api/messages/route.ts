@@ -2,6 +2,7 @@ import { z } from "zod";
 import { after } from "next/server";
 import { handle, ok, parseBody, requireUser, fromRpcError } from "@/lib/api";
 import { processPendingById } from "@/lib/workers/moderation";
+import { Deadline } from "@/lib/workers/deadline";
 
 const Body = z.object({
   conversation_id: z.string().uuid(),
@@ -13,6 +14,8 @@ const Body = z.object({
 
 // Send = create a pending message. The recipient sees nothing until the
 // moderation worker approves it. Idempotent on client_send_id.
+export const maxDuration = 60;
+
 export async function POST(req: Request) {
   return handle(async () => {
     const { supabase } = await requireUser();
@@ -23,7 +26,8 @@ export async function POST(req: Request) {
     });
     if (error) throw fromRpcError(error);
     const pendingId = data as string;
-    after(async () => { await processPendingById(pendingId); });
+    // immediate check, bounded well inside the route's 60 s limit; the tick retries anything missed
+    after(async () => { await processPendingById(pendingId, Deadline.in(45_000)); });
     return ok({ pending_id: pendingId, status: "pending" });
   });
 }

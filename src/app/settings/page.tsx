@@ -25,7 +25,7 @@ export default async function SettingsPage() {
   ]);
   const upcoming = nextSessions(serverNow(), 1, schedule)[0] ?? null;
   const answered = profile ? Object.keys(profile.political_answers ?? {}).length : 0;
-  const stats: Stats = (Array.isArray(statsRows) ? statsRows[0] : statsRows) ?? { people: 0, conversations: 0, friends: 0, full_rounds: 0, reconnections: 0 };
+  const stats: Stats = (Array.isArray(statsRows) ? statsRows[0] : statsRows) ?? { people: 0, conversations: 0, chats: 0, friends: 0, full_rounds: 0, reconnections: 0 };
   const badges = badgesFor(stats);
   const earned = badges.filter((b) => b.earned);
   const milestone = nextMilestone(stats);
@@ -36,10 +36,11 @@ export default async function SettingsPage() {
 
       <section className="card space-y-4" aria-labelledby="stats-title">
         <h2 id="stats-title" className="sr-only">Your participation</h2>
-        <div className="grid grid-cols-3 gap-2 text-center">
+        <div className="grid grid-cols-4 gap-2 text-center">
           <Stat n={stats.people} label={stats.people === 1 ? "person" : "people"} sub="talked with" />
           <Stat n={stats.conversations} label={stats.conversations === 1 ? "conversation" : "conversations"} sub="completed" />
-          <Stat n={stats.friends} label={stats.friends === 1 ? "friend" : "friends"} sub="mutual" />
+          <Stat n={stats.chats} label={stats.chats === 1 ? "chat" : "chats"} sub="ongoing" />
+          <Stat n={stats.friends} label={stats.friends === 1 ? "friend" : "friends"} sub="contact shared" />
         </div>
         {milestone && <p className="text-center text-sm muted">{milestone}</p>}
       </section>

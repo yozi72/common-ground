@@ -37,7 +37,7 @@ export async function runTick(opts: { retention?: boolean; source?: string; budg
   await stage("email", () => sendQueuedEmails(20, deadline));
   await stage("friendPush", () => sendFriendMessagePushes());
 
-  await stage("moderation", () => processPendingBatch(20, deadline), 5000);
+  await stage("moderation", () => processPendingBatch(20, deadline), 6000);
 
   // Conversations that opened but have no question yet (e.g. generation failed at open time)
   await stage("questions", async () => {
@@ -45,15 +45,23 @@ export async function runTick(opts: { retention?: boolean; source?: string; budg
     const { data: fresh } = await admin.from("conversations").select("id").eq("status", "opening").eq("questions_asked", 0).limit(20);
     for (const c of fresh ?? []) {
       if (deadline.remainingMs() < QUESTION_BUDGET_MS) break;
-      try { await generateNextQuestion(c.id, "opening"); asked++; } catch (e) { console.warn("[tick] question", (e as Error).message); }
+      try { await generateNextQuestion(c.id, "opening", { deadlineMs: deadline.remainingMs() - 1000 }); asked++; } catch (e) { console.warn("[tick] question", (e as Error).message); }
     }
     // Opening conversations whose current question was revealed but the next never arrived
     const { data: stuck } = await admin.from("conversations").select("id").eq("status", "opening").gt("questions_asked", 0).limit(50);
     for (const c of stuck ?? []) {
       if (deadline.remainingMs() < QUESTION_BUDGET_MS) break;
-      try { await advanceAfterReveal(c.id); advanced++; } catch (e) { console.warn("[tick] advance", (e as Error).message); }
+      try { await advanceAfterReveal(c.id, deadline); advanced++; } catch (e) { console.warn("[tick] advance", (e as Error).message); }
     }
-    return { asked, advanced };
+    // Open chats whose next shared question is due but was never generated
+    // (the moderation worker skips follow-ups when it is short on time)
+    let mid = 0;
+    const { data: due } = await admin.rpc("conversations_due_for_question", { p_limit: 20 });
+    for (const id of (due ?? []) as string[]) {
+      if (deadline.remainingMs() < QUESTION_BUDGET_MS) break;
+      try { if (await generateNextQuestion(id, "mid", { deadlineMs: deadline.remainingMs() - 1000 })) mid++; } catch (e) { console.warn("[tick] mid question", (e as Error).message); }
+    }
+    return { asked, advanced, mid };
   }, QUESTION_BUDGET_MS);
 
   if (opts.retention) {

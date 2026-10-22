@@ -9,10 +9,19 @@
 // expired, an overlapping worker, a cancellation or a human decision can never
 // be overwritten by a stale automated outcome. A worker that runs out of time
 // hands unprocessed claims back without consuming an attempt.
+//
+// Deadlines: the remaining budget is passed into every model call (timeout and
+// retry count shrink to fit), follow-up question generation only runs when
+// there is room for it (the tick's question stage catches the rest), and a
+// message whose call cannot start before the deadline is released, not failed.
+//
+// Contact permission: thread_contact_allowed (database) is the one authority.
+// Its value at moderation time is handed to apply_moderation_decision, which
+// re-checks it under the conversation lock before delivering.
 import "server-only";
 import { supabaseAdmin } from "@/lib/supabase/admin";
-import { moderate, GatewayError } from "@/lib/ai/gateway";
-import { runDetectors, hitsAreIdentifying } from "@/lib/ai/detectors";
+import { moderate, GatewayError, MODEL_TIMEOUT_MS } from "@/lib/ai/gateway";
+import { runDetectors, hitsAreIdentifying, categoriesAreIdentityOnly } from "@/lib/ai/detectors";
 import { generateNextQuestion } from "./questions";
 import { Deadline } from "./deadline";
 
@@ -22,29 +31,33 @@ type PendingRow = {
 };
 
 export const CLAIM_LEASE_SECONDS = 75;      // ≥ gateway timeout (25 s) × 2 tries + margin
-const PER_MESSAGE_BUDGET_MS = 30_000;       // worst case one moderation call incl. a retry
+const MIN_START_MS = 6_000;                 // smallest budget worth starting a (shortened) model call
+const TYPICAL_MESSAGE_MS = MODEL_TIMEOUT_MS + 5_000;   // used only to size claims
+const QUESTION_FOLLOWUP_MS = 15_000;        // room needed to generate a follow-up question inline
 const BATCH = 5;                            // claim in small batches so nothing waits on a long lease
+
+export type ModerationDeps = { moderate?: typeof moderate };   // injectable for tests (slow / failing providers)
 
 // Drains everything that is due, in small claims, until the deadline leaves no
 // room for another message. `limit` caps one claim; the deadline bounds the run.
-export async function processPendingBatch(limit = 10, deadline: Deadline = Deadline.none()): Promise<{ processed: number; deferred: number; released: number }> {
+export async function processPendingBatch(limit = 10, deadline: Deadline = Deadline.none(), deps: ModerationDeps = {}): Promise<{ processed: number; deferred: number; released: number }> {
   const admin = supabaseAdmin();
   const out = { processed: 0, deferred: 0, released: 0 };
-  while (deadline.remainingMs() > PER_MESSAGE_BUDGET_MS) {
+  while (deadline.remainingMs() > MIN_START_MS) {
     // never claim more than can plausibly start before the deadline
-    const n = Math.min(BATCH, limit, Math.max(1, Math.floor(deadline.remainingMs() / PER_MESSAGE_BUDGET_MS)));
+    const n = Math.min(BATCH, limit, Math.max(1, Math.floor(deadline.remainingMs() / TYPICAL_MESSAGE_MS)));
     const { data, error } = await admin.rpc("claim_pending", { p_limit: n, p_lease_seconds: CLAIM_LEASE_SECONDS });
     if (error) throw new Error(`claim_pending: ${error.message}`);
     const rows = (data ?? []) as PendingRow[];
     if (!rows.length) break;
     for (let i = 0; i < rows.length; i++) {
-      if (deadline.remainingMs() <= PER_MESSAGE_BUDGET_MS) {
+      if (deadline.remainingMs() <= MIN_START_MS) {
         // out of time: give the rest back untouched (no attempt consumed)
         for (const r of rows.slice(i)) { await admin.rpc("release_pending_claim", { p_id: r.id, p_claim_token: r.claim_token }); out.released++; }
         return out;
       }
-      const ok = await processOne(rows[i]);
-      if (ok) out.processed++; else out.deferred++;
+      const r = await processOne(rows[i], deadline, deps);
+      if (r === "ok") out.processed++; else if (r === "released") out.released++; else out.deferred++;
     }
     if (rows.length < n) break;
   }
@@ -52,16 +65,17 @@ export async function processPendingBatch(limit = 10, deadline: Deadline = Deadl
 }
 
 // Called right after a send so the common case is fast; the cron tick retries anything missed.
-export async function processPendingById(id: string) {
+export async function processPendingById(id: string, deadline: Deadline = Deadline.in(50_000), deps: ModerationDeps = {}) {
   const admin = supabaseAdmin();
   const { data } = await admin.rpc("claim_pending_by_id", { p_id: id, p_lease_seconds: CLAIM_LEASE_SECONDS });
   const row = ((data ?? []) as PendingRow[])[0];
   if (!row) return;
-  await processOne(row);
+  await processOne(row, deadline, deps);
 }
 
-async function processOne(row: PendingRow): Promise<boolean> {
+async function processOne(row: PendingRow, deadline: Deadline, deps: ModerationDeps): Promise<"ok" | "deferred" | "released"> {
   const admin = supabaseAdmin();
+  const mod = deps.moderate ?? moderate;
   try {
     // Minimal context: last 8 approved messages, sender-relative, never stored by the gateway.
     const { data: recentRows } = await admin
@@ -71,16 +85,18 @@ async function processOne(row: PendingRow): Promise<boolean> {
       .order("created_at", { ascending: false })
       .limit(8);
     const recent = (recentRows ?? []).reverse().map((m) => ({ fromSender: m.sender_participant_id === row.sender_participant_id, body: m.body }));
-    // Chat tier: in a friends-tier chat both people chose to share contact details.
-    const { data: conv } = await admin.from("conversations").select("kind, connection_id").eq("id", row.conversation_id).maybeSingle();
+    const { data: conv } = await admin.from("conversations").select("kind").eq("id", row.conversation_id).maybeSingle();
     const isThread = conv?.kind === "friend";
-    const { data: link } = isThread && conv?.connection_id ? await admin.from("connections").select("tier, status").eq("id", conv.connection_id).maybeSingle() : { data: null };
-    const contactAllowed = !!(isThread && link?.tier === "friend" && link?.status === "active");
-    const detectorHits = contactAllowed ? [] : runDetectors(row.body, recent.filter((r) => r.fromSender).map((r) => r.body));
+    // one authority for contact permission (friends tier, active, unblocked)
+    const { data: allowed, error: allowedErr } = isThread ? await admin.rpc("thread_contact_allowed", { p_conversation: row.conversation_id }) : { data: false, error: null };
+    if (allowedErr) throw new Error(`thread_contact_allowed: ${allowedErr.message}`);
+    const contactAllowed = allowed === true;
+    const detectorHits = runDetectors(row.body, recent.filter((r) => r.fromSender).map((r) => r.body));
 
-    const result = await moderate({ body: row.body, kind: row.kind, recent, detectorHits, contactAllowed });
-    // In a continuing chat, explain the way to unlock contact sharing (never auto-request it).
-    if (isThread && !contactAllowed && result.decision !== "allow" && hitsAreIdentifying(result.detectorHits)) {
+    const result = await mod({ body: row.body, kind: row.kind, recent, detectorHits, contactAllowed }, { deadlineMs: deadline.remainingMs() - 1000 });
+    // In a continuing chat, a held message about the sender's own contact details gets
+    // the way to unlock sharing. Never for blocks, holds, or anything beyond identity.
+    if (isThread && !contactAllowed && result.decision === "revise" && categoriesAreIdentityOnly(result.categories) && hitsAreIdentifying(result.detectorHits)) {
       result.user_explanation = `${result.user_explanation ?? "This looks like it contains contact or identifying details."} Contact details can be shared once you both choose “Become friends” in this chat.`;
     }
 
@@ -97,16 +113,25 @@ async function processOne(row: PendingRow): Promise<boolean> {
       p_raw_valid: result.rawValid,
       p_latency_ms: result.latencyMs,
       p_claim_token: row.claim_token,
+      p_contact_allowed: contactAllowed,
     });
     if (error) throw new Error(`apply_moderation_decision: ${error.message}`);
 
-    const o = (outcome ?? {}) as { question_due?: boolean; revealed?: boolean; skipped?: boolean };
-    if (o.skipped) return true; // stale claim or state changed meanwhile: the newer outcome stands
-    if (o.question_due) await generateNextQuestion(row.conversation_id, "mid");
-    if (o.revealed) await advanceAfterReveal(row.conversation_id);
-    return true;
+    const o = (outcome ?? {}) as { question_due?: boolean; revealed?: boolean; skipped?: boolean; reason?: string };
+    if (o.skipped) return "ok"; // stale claim, cleared history, or permission changed (re-moderated on the next claim)
+    // follow-ups only when there is time; otherwise the tick's question stage picks them up
+    if (deadline.remainingMs() > QUESTION_FOLLOWUP_MS) {
+      if (o.question_due) await generateNextQuestion(row.conversation_id, "mid", { deadlineMs: deadline.remainingMs() - 1000 });
+      if (o.revealed) await advanceAfterReveal(row.conversation_id, deadline);
+    }
+    return "ok";
   } catch (e) {
     const msg = e instanceof GatewayError ? e.message : `worker: ${(e as Error).message}`;
+    if (e instanceof GatewayError && e.outOfTime) {
+      // our deadline, not the provider's fault: hand the claim back without consuming the attempt
+      await admin.rpc("release_pending_claim", { p_id: row.id, p_claim_token: row.claim_token });
+      return "released";
+    }
     if (e instanceof GatewayError && e.refusal) {
       // The model would not assess this content at all. Retrying won't change that: hold it for a person.
       console.warn(`[moderation] holding ${row.id} for review: ${msg}`);
@@ -116,22 +141,22 @@ async function processOne(row: PendingRow): Promise<boolean> {
         p_suggested_revision: null, p_confidence: 0, p_detector_hits: [], p_provider: "anthropic", p_model: null, p_raw_valid: false, p_latency_ms: null,
         p_claim_token: row.claim_token,
       });
-      return false;
+      return "deferred";
     }
     console.warn(`[moderation] deferring ${row.id}: ${msg}`);
     await admin.rpc("defer_pending", { p_pending: row.id, p_error: msg, p_max_attempts: 6, p_claim_token: row.claim_token });
-    return false;
+    return "deferred";
   }
 }
 
 // After an opening-round question is revealed, ask the next one (or the
 // conversation has moved to 'chatting' inside maybe_reveal_question).
-export async function advanceAfterReveal(conversationId: string) {
+export async function advanceAfterReveal(conversationId: string, deadline: Deadline = Deadline.none()) {
   const admin = supabaseAdmin();
   const { data: conv } = await admin.from("conversations").select("status, questions_asked, opening_question_count").eq("id", conversationId).single();
   if (!conv) return;
   if (conv.status === "opening" && conv.questions_asked < conv.opening_question_count) {
     const { data: open } = await admin.from("conversation_questions").select("id").eq("conversation_id", conversationId).eq("status", "open").limit(1);
-    if (!open?.length) await generateNextQuestion(conversationId, "opening");
+    if (!open?.length) await generateNextQuestion(conversationId, "opening", { deadlineMs: deadline.remainingMs() - 1000 });
   }
 }

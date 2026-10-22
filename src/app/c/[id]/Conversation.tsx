@@ -4,10 +4,11 @@ import { useRouter } from "next/navigation";
 import { supabaseBrowser } from "@/lib/supabase/client";
 import { TwoCups } from "@/components/Illustrations";
 import { UNREAD_CHANGED } from "@/components/useUnread";
-import { olderCursor, reachedStart, readMarkFor, readMarkAfter, PAGE_SIZE, gapCursor, reconcile, rangeOfNewestPage, rangeOfOlderPage, rangeOfNewerPage, withoutIds, compareMsgs } from "@/lib/chat-history";
+import { readMarkFor, readMarkAfter, PAGE_SIZE } from "@/lib/chat-history";
+import { ChatSync, type SyncState } from "@/lib/chat-sync";
 import { latestMessages, olderMessages, newerMessages, existingIds, actionablePending } from "@/lib/chat-queries";
 
-type Conv = { id: string; status: "opening" | "chatting" | "ended"; opening_question_count: number; questions_asked: number; end_reason: string | null; kind?: "live" | "friend" };
+type Conv = { id: string; status: "opening" | "chatting" | "ended"; opening_question_count: number; questions_asked: number; end_reason: string | null; kind?: "live" | "friend"; history_cleared_at?: string | null };
 type Question = { id: string; seq: number; phase: "opening" | "mid"; question_text: string; choices: string[]; status: "open" | "revealed" | "closed"; created_at: string; revealed_at: string | null };
 type Answer = { question_id: string; participant_id: string; choice_index: number | null; custom_text: string | null; status: string };
 type Msg = { id: string; sender_participant_id: string; kind: "chat" | "answer"; body: string; created_at: string };
@@ -15,21 +16,26 @@ type ThreadState = { tier?: "chat" | "friend"; request_from_me?: boolean; reques
 type Pending = { id: string; client_send_id: string; kind: "chat" | "answer"; question_id: string | null; body: string; status: string; user_explanation: string | null; suggested_revision: string | null; created_at: string; attempts: number };
 
 const PENDING_CANCEL_AFTER_MS = 45_000;
-const PAGE = PAGE_SIZE; // newest messages loaded first; older history on request; nothing loaded is ever dropped
 
 export function Conversation({ conversationId, myParticipantId, myAlias, peerAlias, peerBadges = [], kind = "live", connectionId = null, initialMuted = false }: { conversationId: string; myParticipantId: string; myAlias: string; peerAlias: string; peerBadges?: string[]; kind?: "live" | "friend"; connectionId?: string | null; initialMuted?: boolean }) {
   const router = useRouter();
   const [conv, setConv] = useState<Conv | null>(null);
   const [questions, setQuestions] = useState<Question[]>([]);
   const [answers, setAnswers] = useState<Answer[]>([]);
-  const [messages, setMessagesState] = useState<Msg[]>([]); // everything loaded so far, oldest first (merged by id)
-  const messagesRef = useRef<Msg[]>([]);                      // same, readable inside async loads
-  const setMessages = useCallback((next: Msg[] | ((prev: Msg[]) => Msg[])) => {
-    const v = typeof next === "function" ? next(messagesRef.current) : next;
-    messagesRef.current = v; setMessagesState(v);
-  }, []);
-  const [latestFull, setLatestFull] = useState(false);      // the newest page was full → there may be older history
-  const [historyDone, setHistoryDone] = useState(false);
+  // Message cache orchestration (newest page, gap catch-up, older pages, deletion
+  // checks, clears) lives in ChatSync so its sequencing is testable on its own.
+  const [syncState, setSyncState] = useState<SyncState<Msg>>({ messages: [], gap: null, gapTarget: null, latestFull: false, historyDone: false, clearedAt: null, lastError: null });
+  const [sync] = useState(() => {
+    const sb = supabaseBrowser();
+    const run = async <T,>(q: PromiseLike<{ data: T | null; error: unknown }>) => { const r = await q; return { data: r.data, error: r.error }; };
+    return new ChatSync<Msg>({
+      latest: () => run(latestMessages(sb, conversationId, PAGE_SIZE)) as Promise<{ data: Msg[] | null; error: unknown }>,
+      newer: (c) => run(newerMessages(sb, conversationId, c, PAGE_SIZE)) as Promise<{ data: Msg[] | null; error: unknown }>,
+      older: (c) => run(olderMessages(sb, conversationId, c, PAGE_SIZE)) as Promise<{ data: Msg[] | null; error: unknown }>,
+      existing: (ids) => run(existingIds(sb, conversationId, ids)) as Promise<{ data: { id: string }[] | null; error: unknown }>,
+    }, (st) => setSyncState(st));
+  });
+  const messages = syncState.messages;
   const [loadingMore, setLoadingMore] = useState(false);
   const lastReadSent = useRef<string | null>(null);
   const [pending, setPending] = useState<Pending[]>([]);
@@ -37,7 +43,7 @@ export function Conversation({ conversationId, myParticipantId, myAlias, peerAli
   const [error, setError] = useState<string | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [reporting, setReporting] = useState(false);
-  const [confirming, setConfirming] = useState<"leave" | "block" | "unfriend" | "clear" | "friend_request" | null>(null);
+  const [confirming, setConfirming] = useState<"leave" | "block" | "unfriend" | "clear" | "friend_request" | "friend_accept" | null>(null);
   const [thread, setThread] = useState<ThreadState>({});
   const [muted, setMuted] = useState(initialMuted);
   const isFriend = kind === "friend";
@@ -46,11 +52,10 @@ export function Conversation({ conversationId, myParticipantId, myAlias, peerAli
 
   const load = useCallback(async () => {
     const sb = supabaseBrowser();
-    const [c, q, a, m, p, n, ts] = await Promise.all([
-      sb.from("conversations").select("id, status, opening_question_count, questions_asked, end_reason, kind").eq("id", conversationId).maybeSingle(),
+    const [c, q, a, p, n, ts] = await Promise.all([
+      sb.from("conversations").select("id, status, opening_question_count, questions_asked, end_reason, kind, history_cleared_at").eq("id", conversationId).maybeSingle(),
       sb.from("conversation_questions").select("id, seq, phase, question_text, choices, status, created_at, revealed_at").eq("conversation_id", conversationId).order("seq"),
       sb.from("question_answers").select("question_id, participant_id, choice_index, custom_text, status").eq("conversation_id", conversationId),
-      latestMessages(sb, conversationId, PAGE),
       actionablePending(sb, conversationId),   // only records that still need me (cancel / revise / appeal)
       sb.from("notifications").select("id").eq("kind", "partner_away").contains("payload", { conversation_id: conversationId }).limit(1),
       kind === "friend" ? sb.rpc("thread_state", { p_conversation: conversationId }) : Promise.resolve({ data: null, error: null }),
@@ -59,27 +64,11 @@ export function Conversation({ conversationId, myParticipantId, myAlias, peerAli
     if (ts.data) setThread(ts.data as ThreadState);
     setQuestions((q.data ?? []) as Question[]);
     setAnswers((a.data ?? []) as Answer[]);
-    const latest = ((m.data ?? []) as Msg[]).slice().reverse();
-    if (!m.error) {
-      // The newest page is authoritative for its own range (deletions inside it are
-      // dropped). If the cache ends before the page begins, messages may have arrived
-      // in between while we were away: catch up forward until the ranges meet.
-      const cached = messagesRef.current;
-      let merged = reconcile(cached, latest, rangeOfNewestPage(latest));
-      let cursor = gapCursor(cached, latest);
-      const pageOldest = latest[0] ?? null;
-      for (let i = 0; cursor && pageOldest && i < 25; i++) {
-        const { data, error } = await newerMessages(sb, conversationId, cursor, PAGE);
-        if (error) break;
-        const page = (data ?? []) as Msg[];
-        merged = reconcile(merged, page, rangeOfNewerPage(page, cursor));
-        const newest = page[page.length - 1];
-        if (page.length < PAGE || !newest || compareMsgs(newest, pageOldest) >= 0) break;
-        cursor = { created_at: newest.created_at, id: newest.id };
-      }
-      setMessages(merged);
-      setLatestFull(latest.length >= PAGE);
-    }
+    // A clear (ours or theirs) drops everything from before it, including anything an
+    // in-flight request might still bring back; then the newest page and any gap.
+    if (c.data?.history_cleared_at) sync.setClearedAt(c.data.history_cleared_at);
+    await sync.refresh();
+    const loaded = sync.current;
     if (!p.error) setPending(((p.data ?? []) as Pending[]).slice().reverse());
     setPartnerAway(!!n.data?.length);
     if (c.data?.status === "ended" && c.data?.kind !== "friend") router.push(`/c/${conversationId}/reflect`);
@@ -87,52 +76,30 @@ export function Conversation({ conversationId, myParticipantId, myAlias, peerAli
     // successful fetch, and only up to the newest message shown (never on error).
     // Ended friendships count as read too, so viewing their history clears the badge.
     // A failed request (network or 5xx) is retried on the next load.
-    const mark = readMarkFor({ kind: c.data?.kind, loadFailed: !!m.error, newest: latest[latest.length - 1]?.created_at ?? null, visible: document.visibilityState === "visible", lastSent: lastReadSent.current });
+    const mark = readMarkFor({ kind: c.data?.kind, loadFailed: loaded.lastError === "refresh", newest: loaded.messages[loaded.messages.length - 1]?.created_at ?? null, visible: document.visibilityState === "visible", lastSent: lastReadSent.current });
     if (mark) {
       lastReadSent.current = mark;
       fetch(`/api/conversations/${conversationId}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "read", up_to: mark }) })
         .then((res) => { lastReadSent.current = readMarkAfter(mark, res.ok); if (res.ok) window.dispatchEvent(new Event(UNREAD_CHANGED)); })
         .catch(() => { lastReadSent.current = readMarkAfter(mark, false); });
     }
-  }, [conversationId, router, setMessages, kind]);
+  }, [conversationId, router, kind, sync]);
 
   // History outside the newest page can't be proven present by a limited query, so
   // its ids are re-checked on reconnect and every minute: anything the server no
-  // longer has (deleted, expired by retention) leaves the cache.
-  const verifyHistory = useCallback(async () => {
-    const cached = messagesRef.current;
-    if (!cached.length) return;
-    const sb = supabaseBrowser();
-    const { data: newest, error } = await latestMessages(sb, conversationId, PAGE);
-    if (error) return;
-    const page = ((newest ?? []) as Msg[]).slice().reverse();
-    let merged = reconcile(cached, page, rangeOfNewestPage(page));
-    const pageOldest = page[0] ?? null;
-    const outside = pageOldest ? merged.filter((m) => compareMsgs(m, pageOldest) < 0) : [];
-    for (let i = 0; i < outside.length; i += 200) {
-      const chunk = outside.slice(i, i + 200).map((m) => m.id);
-      const { data, error: e2 } = await existingIds(sb, conversationId, chunk);
-      if (e2) return;
-      const present = new Set((data ?? []).map((r: { id: string }) => r.id));
-      merged = withoutIds(merged, chunk.filter((id) => !present.has(id)));
-    }
-    setMessages(merged);
-  }, [conversationId, setMessages]);
+  // longer has (deleted, expired by retention) leaves the cache. Only removes.
+  const verifyHistory = useCallback(() => sync.verify(), [sync]);
 
   // Earlier history, one page at a time, strictly before the oldest message we
   // have, in (created_at, id) order so equal timestamps page correctly.
   async function loadOlder() {
-    const cursor = olderCursor(messages);
-    if (!cursor || loadingMore) return;
+    if (loadingMore) return;
     setLoadingMore(true);
-    const { data, error } = await olderMessages(supabaseBrowser(), conversationId, cursor, PAGE);
+    const ok = await sync.loadOlder();
     setLoadingMore(false);
-    if (error) { setError("Couldn't load earlier messages. Try again."); return; }
-    const page = (data ?? []) as Msg[];
-    setMessages((prev) => reconcile(prev, page, rangeOfOlderPage(page, cursor)));
-    if (reachedStart(page.length)) setHistoryDone(true);
+    if (!ok && sync.current.lastError === "older") setError("Couldn't load earlier messages. Try again.");
   }
-  const canLoadOlder = !historyDone && latestFull;
+  const canLoadOlder = !syncState.historyDone && syncState.latestFull;
 
   useEffect(() => { const t = setTimeout(load, 0); return () => clearTimeout(t); }, [load]);
 
@@ -142,7 +109,7 @@ export function Conversation({ conversationId, myParticipantId, myAlias, peerAli
     const ch = sb.channel(`conv:${conversationId}`)
       .on("postgres_changes", { event: "*", schema: "public", table: "approved_messages", filter: `conversation_id=eq.${conversationId}` }, load)
       // deletes carry only the id (no conversation filter possible); drop it if we have it
-      .on("postgres_changes", { event: "DELETE", schema: "public", table: "approved_messages" }, (payload: { old?: { id?: string } | null }) => { const id = payload.old?.id; if (id) setMessages((prev) => withoutIds(prev, [id])); })
+      .on("postgres_changes", { event: "DELETE", schema: "public", table: "approved_messages" }, (payload: { old?: { id?: string } | null }) => { const id = payload.old?.id; if (id) sync.remove([id]); })
       .on("postgres_changes", { event: "*", schema: "public", table: "conversation_questions", filter: `conversation_id=eq.${conversationId}` }, load)
       .on("postgres_changes", { event: "*", schema: "public", table: "question_answers", filter: `conversation_id=eq.${conversationId}` }, load)
       .on("postgres_changes", { event: "UPDATE", schema: "public", table: "conversations", filter: `id=eq.${conversationId}` }, load)
@@ -156,7 +123,7 @@ export function Conversation({ conversationId, myParticipantId, myAlias, peerAli
     const clock = setInterval(() => setNow(Date.now()), 1000);
     const clock0 = setTimeout(() => setNow(Date.now()), 0);
     return () => { sb.removeChannel(ch); clearInterval(poll); clearInterval(hb); clearInterval(clock); clearTimeout(clock0); clearInterval(verify); document.removeEventListener("visibilitychange", onVisible); };
-  }, [conversationId, load, verifyHistory, isFriend, setMessages]);
+  }, [conversationId, load, verifyHistory, isFriend, sync]);
 
   // Faster polling while something of mine is still being checked.
   const hasLivePending = pending.some((p) => p.status === "pending");
@@ -250,15 +217,15 @@ export function Conversation({ conversationId, myParticipantId, myAlias, peerAli
       {isFriend && conv.status !== "ended" && thread.request_for_me && (
         <section className="card space-y-3" style={{ borderColor: "var(--accent)" }} aria-live="polite">
           <h2 className="font-semibold">{peerAlias} would like to become friends</h2>
-          <p className="muted text-sm">Accepting lets you both share names and contact details in this chat. Messages are still checked for abuse, but once something is shared the app can't protect it. Saying not now is private; they aren't told.</p>
+          <p className="muted text-sm">Accepting means names and contact details are no longer held back in this chat for either of you. Messages are still checked for abuse, threats and scams. Anything shared can't be taken back. Saying not now is private; they aren't told.</p>
           <div className="flex gap-2">
-            <button className="btn btn-primary" onClick={async () => { const r = await api(`/api/conversations/${conversationId}`, { action: "friend_respond", connection_id: connectionId, accept: true }); if (r) await load(); }}>Accept</button>
+            <button className="btn btn-primary" onClick={() => setConfirming("friend_accept")}>Accept</button>
             <button className="btn btn-secondary" onClick={async () => { const r = await api(`/api/conversations/${conversationId}`, { action: "friend_respond", connection_id: connectionId, accept: false }); if (r) await load(); }}>Not now</button>
           </div>
         </section>
       )}
       {isFriend && conv.status !== "ended" && thread.request_from_me && (
-        <p className="notice text-sm" role="status">You asked {peerAlias} to become friends. They'll see your request in this chat.</p>
+        <p className="notice text-sm" role="status">Request sent. If {peerAlias} accepts, this chat becomes a friends chat.</p>
       )}
       {isFriend && conv.status !== "ended" && thread.request_available && !thread.request_for_me && timeline.length > 0 && (
         <div className="flex justify-center">
@@ -268,16 +235,17 @@ export function Conversation({ conversationId, myParticipantId, myAlias, peerAli
 
       {confirming && (
         <section className="card space-y-3" role="alertdialog" aria-labelledby="confirm-title">
-          <h2 id="confirm-title" className="font-medium">{confirming === "block" ? "Block this person and end the conversation?" : confirming === "unfriend" ? `End this chat with ${peerAlias}?` : confirming === "clear" ? "Delete this chat's history?" : confirming === "friend_request" ? `Ask ${peerAlias} to become friends?` : "End this conversation?"}</h2>
-          <p className="muted text-sm">{confirming === "block" ? "You won't be matched with them again, and they won't be told who blocked them. This can't be undone." : confirming === "unfriend" ? "Messaging stops for both of you. What's here stays readable for 30 days, then it's deleted. Chatting again later takes both of you agreeing again, from the reflection of a shared conversation, and starts over without contact sharing." : confirming === "clear" ? "Every message in this chat is deleted for both of you, right away. The chat itself stays open. This can't be undone." : confirming === "friend_request" ? "They'll see your request and can accept or say not now. If they accept, you can both share names and contact details in this chat. Messages are still checked for abuse, but once you share something the app can't take it back. One request per week." : `${peerAlias} will be told the conversation ended. You'll both get a chance to reflect.`}</p>
+          <h2 id="confirm-title" className="font-medium">{confirming === "block" ? "Block this person and end the conversation?" : confirming === "unfriend" ? `End this chat with ${peerAlias}?` : confirming === "clear" ? "Delete this chat's history?" : confirming === "friend_request" ? `Ask ${peerAlias} to become friends?` : confirming === "friend_accept" ? `Become friends with ${peerAlias}?` : "End this conversation?"}</h2>
+          <p className="muted text-sm">{confirming === "block" ? "You won't be matched with them again, and they won't be told who blocked them. This can't be undone." : confirming === "unfriend" ? "Messaging stops for both of you. What's here stays readable for 30 days, then it's deleted. Chatting again later takes both of you agreeing again, from the reflection of a shared conversation, and starts over without contact sharing." : confirming === "clear" ? "Removes every delivered message, shared question and answer from this chat for both of you, right away, and cancels anything of yours still being checked. The chat itself stays open. Reports already filed keep their own copy of what the reporter saw, for safety review only. This can't be undone." : confirming === "friend_request" ? "They'll see your request and can accept or say not now; you won't be told which. If they accept: names and contact details are no longer held back in this chat; messages are still checked for abuse, threats and scams; anything you share can't be taken back from them. Being friends here doesn't mean the app vouches for anyone. One request per week." : confirming === "friend_accept" ? "From then on in this chat: names and contact details are no longer held back by screening; messages are still checked for abuse, threats and scams; anything either of you shares can't be taken back from the other person. Being friends here doesn't mean the app vouches for anyone." : `${peerAlias} will be told the conversation ended. You'll both get a chance to reflect.`}</p>
           <div className="flex gap-2">
-            <button className={confirming === "leave" || confirming === "friend_request" ? "btn btn-primary" : "btn btn-danger"} onClick={async () => {
+            <button className={confirming === "leave" || confirming === "friend_request" || confirming === "friend_accept" ? "btn btn-primary" : "btn btn-danger"} onClick={async () => {
               if (confirming === "unfriend") { const r = await api(`/api/conversations/${conversationId}`, { action: "remove_friend", connection_id: connectionId }); if (r) { setConfirming(null); await load(); } return; }
-              if (confirming === "clear") { const r = await api(`/api/conversations/${conversationId}`, { action: "clear_history" }); if (r) { setConfirming(null); setMessages([]); await load(); } return; }
+              if (confirming === "clear") { const r = await api(`/api/conversations/${conversationId}`, { action: "clear_history" }); if (r) { setConfirming(null); sync.setClearedAt(new Date().toISOString()); await load(); } return; }
+              if (confirming === "friend_accept") { const r = await api(`/api/conversations/${conversationId}`, { action: "friend_respond", connection_id: connectionId, accept: true }); if (r) { setConfirming(null); await load(); } return; }
               if (confirming === "friend_request") { const r = await api(`/api/conversations/${conversationId}`, { action: "friend_request", connection_id: connectionId }); if (r) { setConfirming(null); await load(); } return; }
               const r = await api(`/api/conversations/${conversationId}`, { action: confirming }); if (r) router.push(isFriend ? "/connections" : `/c/${conversationId}/reflect`);
-            }}>{confirming === "block" ? "Block and end" : confirming === "unfriend" ? "End chat" : confirming === "clear" ? "Delete history" : confirming === "friend_request" ? "Send request" : "End conversation"}</button>
-            <button className="btn btn-secondary" onClick={() => setConfirming(null)}>{confirming === "friend_request" ? "Not now" : "Keep talking"}</button>
+            }}>{confirming === "block" ? "Block and end" : confirming === "unfriend" ? "End chat" : confirming === "clear" ? "Delete history" : confirming === "friend_request" ? "Send request" : confirming === "friend_accept" ? "Yes, become friends" : "End conversation"}</button>
+            <button className="btn btn-secondary" onClick={() => setConfirming(null)}>{confirming === "friend_request" || confirming === "friend_accept" ? "Not now" : "Keep talking"}</button>
           </div>
         </section>
       )}

@@ -29,12 +29,23 @@ export async function POST(req: Request) {
     }
     const { data: hb, error } = await supabase.rpc("lobby_heartbeat");
     if (error) throw fromRpcError(error);
-    // presence changed → someone may have become matchable; also housekeeping
-    after(async () => { await supabaseAdmin().rpc("run_matching"); await maybeTick(); });
+    // Presence changed → someone may have become matchable. Matching is global and
+    // runs every minute from the scheduler anyway; heartbeats only trigger it when
+    // the last run on this instance is more than 10 s old (fast enough for a
+    // 60 s invitation window, without a full matching pass per 5 s heartbeat).
+    after(async () => { await maybeMatch(); await maybeTick(); });
     const cfg = await getScheduleConfig();
     const now = Date.now();
     return ok({ now, session: sessionState(now, cfg), schedule: cfg, request: (hb as { request: unknown })?.request ?? null });
   });
+}
+
+let lastMatchRun = 0;
+async function maybeMatch(minIntervalMs = 10_000) {
+  const now = Date.now();
+  if (now - lastMatchRun < minIntervalMs) return;
+  lastMatchRun = now;
+  await supabaseAdmin().rpc("run_matching");
 }
 
 export async function GET() {

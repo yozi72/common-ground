@@ -1,23 +1,28 @@
 "use client";
 import { useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { Sprout, Bridge } from "@/components/Illustrations";
 
 type Reflection = { felt_understood: number | null; recognized_shared: number | null; would_repeat: boolean | null; free_text: string | null };
 
 // The keep-talking decision comes first: it is the one thing that is lost if
 // someone leaves early. The reflection questions follow and are optional.
-export function Reflect({ conversationId, peerAlias, endReason, questionsAsked, initialReflection, initialDecision, friendshipEnabled }: {
+export function Reflect({ conversationId, peerAlias, endReason, questionsAsked, initialReflection, initialDecision, friendshipEnabled, initialConnection = null }: {
   conversationId: string; peerAlias: string; endReason: string | null; questionsAsked: number;
   initialReflection: Reflection | null; initialDecision: boolean | null; friendshipEnabled: boolean;
+  initialConnection?: { connectionId: string; threadId: string | null } | null;
 }) {
+  const router = useRouter();
   const [understood, setUnderstood] = useState(initialReflection?.felt_understood ?? 0);
   const [shared, setShared] = useState(initialReflection?.recognized_shared ?? 0);
   const [repeat, setRepeat] = useState<boolean | null>(initialReflection?.would_repeat ?? null);
   const [text, setText] = useState(initialReflection?.free_text ?? "");
   const [saved, setSaved] = useState(!!initialReflection);
   const [decision, setDecision] = useState<boolean | null>(initialDecision);
-  const [connected, setConnected] = useState(false);
+  const [connection, setConnection] = useState(initialConnection);
+  const [ending, setEnding] = useState(false);
+  const connected = !!connection;
   const [error, setError] = useState<string | null>(null);
   const blocked = endReason === "blocked";
 
@@ -35,7 +40,20 @@ export function Reflect({ conversationId, peerAlias, endReason, questionsAsked, 
   }
   async function decide(d: boolean) {
     const r = await post({ action: "connection_decision", decision: d });
-    if (r) { setDecision(d); if (r.status === "connected") setConnected(true); }
+    if (r) { setDecision(d); if (r.status === "connected") setConnection({ connectionId: r.connection_id, threadId: connection?.threadId ?? null }); }
+  }
+  async function openChat() {
+    if (!connection) return;
+    const res = await fetch(`/api/connections/${connection.connectionId}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "open" }) });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) { setError(json.error ?? "Something went wrong"); return; }
+    router.push(`/c/${json.conversation_id}`);
+  }
+  async function endChat() {
+    if (!connection) return;
+    const res = await fetch(`/api/connections/${connection.connectionId}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "remove" }) });
+    if (!res.ok) { setError((await res.json().catch(() => ({}))).error ?? "Something went wrong"); return; }
+    setConnection(null); setDecision(null); setEnding(false);
   }
 
   return (
@@ -56,7 +74,23 @@ export function Reflect({ conversationId, peerAlias, endReason, questionsAsked, 
           <h2 className="font-semibold text-xl text-center">Keep talking with {peerAlias}?</h2>
           <p className="muted text-sm">Your answer is private. If you both say yes, you both find out and get a chat under Chats that works any time, still under your aliases, still checked before delivery, and still without contact details unless you later both choose to become friends. If only one of you says yes, neither of you is told. You can come back to this from the Chats tab for 30 days.</p>
           {connected ? (
-            <div className="notice notice-ok" role="status">You both said yes. You'll find {peerAlias} under <Link className="underline" href="/connections">Chats</Link>.</div>
+            <div className="space-y-2">
+              <div className="notice notice-ok" role="status">You both said yes. The chat with {peerAlias} is under <Link className="underline" href="/connections">Chats</Link>.</div>
+              {ending ? (
+                <div className="notice notice-warn space-y-2 text-sm" role="alertdialog">
+                  <p>End this chat with {peerAlias}? Messaging stops for both of you. What&apos;s there stays readable for 30 days, then it&apos;s deleted. Chatting again later takes both of you agreeing again.</p>
+                  <div className="flex gap-2">
+                    <button className="btn btn-danger" onClick={endChat}>End chat</button>
+                    <button className="btn btn-secondary" onClick={() => setEnding(false)}>Keep</button>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex gap-2 flex-wrap">
+                  <button className="btn btn-primary" onClick={openChat}>Open chat</button>
+                  <button className="btn btn-ghost text-sm" onClick={() => setEnding(true)}>End this chat</button>
+                </div>
+              )}
+            </div>
           ) : decision === true ? (
             <p className="notice notice-ok" role="status">Recorded. If they also say yes, the chat appears under Chats. <button className="underline" onClick={() => decide(false)}>Change to no</button></p>
           ) : decision === false ? (

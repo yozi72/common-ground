@@ -7,11 +7,12 @@ type Review = { id: string; conversation_id: string; kind: string; body: string;
 type Report = { id: string; conversation_id: string | null; reason: string; details: string | null; status: string; message_ids: string[]; created_at: string };
 type Appeal = { id: string; note: string | null; status: string; created_at: string; pending_messages: { id: string; body: string; status: string; user_explanation: string | null } | null };
 type Cfg = { key: string; value: unknown };
-type Ctx = { id: string; conversation_id: string; sender_participant_id: string; body: string; created_at: string };
+type EvidenceMsg = { id: string; alias: string; kind: string; body: string; at: string };
+type Evidence = { report_id: string; cited: EvidenceMsg[]; context: EvidenceMsg[] };
 
 type Metrics = Record<string, number | string | null> | null;
 
-export function AdminConsole({ review, reports, appeals, config, context, waiting, metrics }: { review: Review[]; reports: Report[]; appeals: Appeal[]; config: Cfg[]; context: Ctx[]; waiting: number; metrics: Metrics }) {
+export function AdminConsole({ review, reports, appeals, config, evidence, waiting, metrics, metricsError }: { review: Review[]; reports: Report[]; appeals: Appeal[]; config: Cfg[]; evidence: Evidence[]; waiting: number; metrics: Metrics; metricsError: string | null }) {
   const router = useRouter();
   const [tab, setTab] = useState<"messages" | "reports" | "appeals" | "metrics" | "config">("messages");
   const [error, setError] = useState<string | null>(null);
@@ -73,13 +74,14 @@ export function AdminConsole({ review, reports, appeals, config, context, waitin
               <p><strong>{r.reason}</strong> · {r.status} · {new Date(r.created_at).toLocaleString()}</p>
               {r.details && <p className="whitespace-pre-wrap">{r.details}</p>}
               <details>
-                <summary className="cursor-pointer muted">Recent messages in that conversation</summary>
+                <summary className="cursor-pointer muted">What the reporter could see when they filed this (snapshot)</summary>
                 <ul className="mt-2 space-y-1">
-                  {context.filter((c) => c.conversation_id === r.conversation_id).reverse().map((c) => (
+                  {(evidence.find((e) => e.report_id === r.id)?.context ?? []).map((c) => (
                     <li key={c.id} className="rounded p-2" style={{ background: r.message_ids.includes(c.id) ? "var(--warn-bg)" : "var(--theirs)" }}>
-                      <span className="font-mono text-xs muted">{c.sender_participant_id.slice(0, 6)}</span> {c.body}
+                      <span className="text-xs muted">{c.alias}{c.kind === "answer" ? " (answer)" : ""} · {new Date(c.at).toLocaleTimeString()}</span> {c.body}
                     </li>
                   ))}
+                  {!(evidence.find((e) => e.report_id === r.id)?.context ?? []).length && <li className="muted text-xs">No messages were visible to the reporter at the time.</li>}
                 </ul>
               </details>
               <div className="flex gap-2 flex-wrap">
@@ -112,7 +114,7 @@ export function AdminConsole({ review, reports, appeals, config, context, waitin
       {tab === "metrics" && (
         <section className="space-y-3">
           <p className="muted text-sm">Last 14 days. Operational only: no conversation text, no questionnaire answers. Waits are reported for people who were matched; the unmatched rate shows how many joined and left without a match.</p>
-          {!metrics ? <p className="card-flat muted text-sm">No data yet.</p> : (
+          {metricsError ? <p className="notice notice-bad text-sm" role="alert">Metrics couldn&apos;t be loaded: {metricsError}</p> : !metrics ? <p className="card-flat muted text-sm">No data yet.</p> : (
             <dl className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-sm">
               {[
                 ["Queue joins", metrics.queue_joins], ["Sessions with joins", metrics.sessions_with_joins],

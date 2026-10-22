@@ -40,18 +40,16 @@ export async function POST(req: Request) {
       return ok();
     }
     if (b.action === "resolve_appeal") {
-      const { data: appeal, error } = await admin.from("appeals").update({ status: b.status, resolution_note: b.note ?? null, resolved_by: user.id, resolved_at: new Date().toISOString() })
-        .eq("id", b.appeal_id).select("pending_message_id").single();
+      // appeal + delivery in one transaction: a failed delivery write fails the resolution too
+      const { data, error } = await admin.rpc("resolve_appeal", { p_appeal: b.appeal_id, p_status: b.status, p_note: b.note ?? null, p_resolver: user.id });
       if (error) throw new Error(error.message);
-      if (b.status === "overturned") {
-        // re-moderate as human allow: the message becomes deliverable
-        await admin.from("pending_messages").update({ status: "pending", attempts: 0 }).eq("id", appeal.pending_message_id).in("status", ["blocked", "revise"]);
-        await admin.rpc("apply_moderation_decision", {
-          p_pending: appeal.pending_message_id, p_decision: "allow", p_categories: ["appeal_overturned"], p_user_explanation: null,
-          p_suggested_revision: null, p_confidence: 1, p_detector_hits: [], p_provider: "human", p_model: null, p_raw_valid: true, p_latency_ms: null,
-        });
+      const o = (data ?? {}) as { question_due?: boolean; revealed?: boolean; pending_id?: string };
+      if (o.pending_id && (o.question_due || o.revealed)) {
+        const { data: row } = await admin.from("pending_messages").select("conversation_id").eq("id", o.pending_id).single();
+        if (row && o.question_due) await generateNextQuestion(row.conversation_id, "mid");
+        if (row && o.revealed) await advanceAfterReveal(row.conversation_id);
       }
-      return ok();
+      return ok(data);
     }
     const { error } = await admin.from("policy_config").upsert({ key: b.key, value: b.value as never, updated_at: new Date().toISOString() });
     if (error) throw new Error(error.message);

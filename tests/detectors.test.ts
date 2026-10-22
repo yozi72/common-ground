@@ -26,3 +26,30 @@ describe("deterministic identity detectors (audit: capitalization)", () => {
     expect(runDetectors("I work at home in Denver")).not.toContain("employer_location");
   });
 });
+
+describe("identity detector: descriptions are not names (seventh review)", () => {
+  it("does not flag ordinary identity descriptions", () => {
+    for (const s of ["I'm American", "I'm Christian", "I'm Republican", "I'm Jewish", "I'm Native American", "I'm Roman Catholic", "I’m Catholic and my wife is Jewish", "This is Texas for you", "I am Canadian, eh", "I'm Gen X", "I'm Black and proud", "I'm Muslim, and it shaped how I see this"]) {
+      expect(runDetectors(s), s).not.toContain("real_name");
+    }
+  });
+  it("still catches explicit disclosures, later in the message, and with curly apostrophes", () => {
+    for (const s of ["I'm Christian. My name is John.", "I’m Jewish, by the way. Call me Dave.", "my name’s Priya", "I'm American and I'm Mike", "Honestly? I am Sarah Connor", "This is Robert, nice to meet you", "MY NAME IS JOHN".toLowerCase().replace("john", "John")]) {
+      expect(runDetectors(s), s).toContain("real_name");
+    }
+  });
+  it("employer + location: lead-ins in any case, generic words excluded", () => {
+    expect(runDetectors("i work at boeing in seattle")).not.toContain("employer_location");   // lowercase brand: too ambiguous for a hint
+    expect(runDetectors("i work at Boeing in Seattle")).toContain("employer_location");
+    expect(runDetectors("I WORK AT BOEING in Seattle")).toContain("employer_location");
+    expect(runDetectors("I work at home in Denver")).not.toContain("employer_location");
+    expect(runDetectors("I work at Boeing in general")).not.toContain("employer_location");
+    expect(runDetectors("I'm a nurse at Mercy, from Dayton")).toContain("employer_location");
+    expect(runDetectors("I work for Amazon", ["I live in Tacoma, WA these days"])).toContain("employer_location");
+  });
+  it("normal personal storytelling passes", () => {
+    for (const s of ["I'm Tired of the arguing, honestly.", "I am Hopeful about next year", "This is Really hard to say", "I'm Sorry I disappeared for a bit", "We moved a lot when I was a kid; I'm Still figuring out where home is"]) {
+      expect(runDetectors(s), s).not.toContain("real_name");
+    }
+  });
+});

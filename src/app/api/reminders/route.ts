@@ -75,3 +75,11 @@ export async function POST(req: Request) {
     }
   });
 }
+
+// The public VAPID key (public by definition) so a service worker can
+// re-subscribe after the browser rotated its push subscription.
+export async function GET(req: Request) {
+  const url = new URL(req.url);
+  if (url.searchParams.get("vapid") !== "1") return new Response(null, { status: 404 });
+  return Response.json({ key: env.pushConfigured() ? process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY ?? null : null }, { headers: { "Cache-Control": "no-store" } });
+}

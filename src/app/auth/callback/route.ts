@@ -21,7 +21,11 @@ export async function GET(req: Request) {
     if (error) return NextResponse.redirect(new URL(`/login?error=${encodeURIComponent(error.message)}`, env.siteUrl()));
     userId = data.user?.id ?? null; email = data.user?.email ?? null;
   } else if (tokenHash && type) {
-    const { data, error } = await supabase.auth.verifyOtp({ token_hash: tokenHash, type: type as "magiclink" | "email" });
+    // runtime allowlist: a cast is not validation
+    const OTP_TYPES = ["magiclink", "email", "recovery", "signup", "invite", "email_change"] as const;
+    const otpType = OTP_TYPES.find((t) => t === type);
+    if (!otpType) return NextResponse.redirect(new URL("/login?error=invalid_link", env.siteUrl()));
+    const { data, error } = await supabase.auth.verifyOtp({ token_hash: tokenHash, type: otpType });
     if (error) return NextResponse.redirect(new URL(`/login?error=${encodeURIComponent(error.message)}`, env.siteUrl()));
     userId = data.user?.id ?? null; email = data.user?.email ?? null;
   } else {
