@@ -114,7 +114,7 @@ All nine findings were confirmed and fixed in `2c165c7` (migration `0004_review_
 | — | Sign-in page wording | mentions optional session reminders | — |
 
 ## Stabilization release (2026-10-22, combined reviews of 703a9d6 / 0015) — status
-Migration `0016_stabilization.sql`. Every finding was re-verified against the code before changing anything; "confirmed" below means reproduced or shown by inspection, not taken from a reviewer's explanation.
+Code e01f05e, migration `0016_stabilization.sql` (hosted), Vercel production Ready (common-ground-gwi3i124c). Verification run: `npx vitest run` 21 files / 296 tests passed, typecheck, lint and production build clean; browser checks with isolated local accounts (reflection rematch card, Chats "Met again", ended chat with an appealable held message, review console appeal button). Every finding was re-verified against the code before changing anything; "confirmed" below means reproduced or shown by inspection, not taken from a reviewer's explanation.
 
 | # | Finding | Status | Where (file / function) | Regression test → result |
 |---|---|---|---|---|
