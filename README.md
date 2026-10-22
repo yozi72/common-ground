@@ -73,6 +73,8 @@ npm test                    # needs the local Supabase running and keys in the e
 
 Run `npm test` with `.env.local` exported, e.g. `set -a; source .env.local; set +a; npm test`.
 
+Other test files: `detector-table.test.ts` (105 maintained phrases), `budgets.test.ts` (gateway path with an intercepted provider), `connection-state.test.tsx` (rendered Chats/reflection markup), `question-progress.test.ts` (backlog across ticks), `push-deadlines.test.ts`, `appeals-locks.test.ts` (coordinated Postgres transactions via `tests/pg.ts`), `stabilization-misc.test.ts`, `email-isolation.test.ts`.
+
 Tests are isolated from real providers: `tests/setup.ts` refuses to run against anything but the local Supabase stack, removes every email/push/model credential from the test process, replaces nodemailer and web-push with fakes that throw, and blocks `fetch` to non-local hosts. The code side, `env.liveDeliveryAllowed()`, is false under vitest and false outside production unless `ALLOW_LIVE_DELIVERY=true`; a local `npm run dev` or `npm run tick` therefore never sends real email or push unless you set that variable on purpose. `tests/email-isolation.test.ts` checks all of it.
 
 ### Verification evidence (2026-10-20, local Supabase via Colima, `AI_PROVIDER=mock`)
@@ -110,7 +112,7 @@ Latency: the send-to-delivery path is sender → `submit_message` → `after()` 
 
 - Review console: `/admin` for the `ADMIN_EMAIL` account. Held messages, reports (with the last 20 messages of the conversation), appeals, and policy knobs (`policy_config`).
 - Outage behaviour: messages stay `pending` with exponential backoff (5s→120s), six attempts, then `review`. Senders see an explanation and can cancel.
-- Retention: `purge_retention` (nightly) deletes approved messages 30 days after a live conversation ends, chat history, shared questions and answers 30 days after a conversation or chat ends (open chat history is kept until a participant clears it; report evidence snapshots live with the report), finished queue entries after 90 days, metric events after a year (worker heartbeats after 7 days), finished email-outbox rows and reminder-send records after 30 days, resolved pending/blocked rows after 7 days (not while an appeal is open), resolved reports after 365 days.
+- Retention: `purge_retention` (nightly) deletes approved messages 30 days after a live conversation ends, chat history, shared questions and answers 30 days after a conversation or chat ends (open chat history is kept until a participant clears it; report evidence snapshots live with the report), finished queue entries and resolved match invitations after 90 days, metric events after a year (worker heartbeats after 7 days), finished email-outbox rows and reminder-send records after 30 days, resolved pending/blocked rows after 7 days (not while an appeal is open), resolved reports after 365 days.
 - Deletion: `DELETE /api/account` ends live state, then deletes the auth user; everything cascades.
 
 See `DECISIONS.md` for the choices made so far and what is still open.
