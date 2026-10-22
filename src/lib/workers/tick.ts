@@ -5,7 +5,9 @@
 // Budget: the route's maxDuration (60 s) minus a safety margin. Cheap, time-
 // sensitive stages (reminders, emails, friend pushes) run before the model-
 // bound ones so a moderation backlog can never starve them; moderation claims
-// only what can start before the deadline and releases the rest.
+// only what can start before the deadline and releases the rest; question
+// generation gets a reserve measured after the cheap stages and works through
+// one ordered, backed-off list (see question_work in migration 0016).
 import "server-only";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { processPendingBatch, advanceAfterReveal } from "./moderation";
@@ -17,26 +19,36 @@ import { Deadline } from "./deadline";
 
 export const TICK_MAX_DURATION_SECONDS = 60;
 
-async function hasQuestionWork(admin: ReturnType<typeof supabaseAdmin>) {
-  const [{ count: fresh }, { data: due }] = await Promise.all([
-    admin.from("conversations").select("id", { count: "exact", head: true }).eq("status", "opening").eq("questions_asked", 0),
-    admin.rpc("conversations_due_for_question", { p_limit: 1 }),
-  ]);
-  if ((fresh ?? 0) > 0 || (due ?? []).length > 0) return true;
-  // opening rounds whose revealed question has no successor yet
-  const { data: stuck } = await admin.from("conversations").select("id").eq("status", "opening").gt("questions_asked", 0).limit(20);
-  for (const c of stuck ?? []) {
-    const { data: open } = await admin.from("conversation_questions").select("id").eq("conversation_id", c.id).eq("status", "open").limit(1);
-    if (!open?.length) return true;
-  }
-  return false;
-}
+// Budget constants (all in ms). A tick needs roughly MODERATION_MIN_MS +
+// QUESTION_ITEM_MS + the cheap stages (~20 s) for BOTH moderation and question
+// generation to make progress; the cron tick has 48 s, the opportunistic tick 25 s.
 const SAFETY_MARGIN_MS = 12_000;
-const QUESTION_BUDGET_MS = 20_000; // one generation call worst case
+export const QUESTION_ITEM_MS = 8_000;      // smallest budget worth starting one generation (the gateway shortens the call to fit; a miss falls back to the bank)
+export const QUESTION_RESERVE_MS = 12_000;  // what moderation leaves for questions when question work exists
+const MODERATION_MIN_MS = 8_000;            // moderation keeps at least this much when it has to share
 
-export async function runTick(opts: { retention?: boolean; source?: string; budgetMs?: number } = {}) {
+type QuestionWork = { id: string; need: "first" | "successor" | "mid" };
+async function questionWork(admin: ReturnType<typeof supabaseAdmin>, limit: number): Promise<QuestionWork[]> {
+  const { data, error } = await admin.rpc("question_work", { p_limit: limit });
+  if (error) throw new Error(`question_work: ${error.message}`);
+  return (data ?? []) as QuestionWork[];
+}
+
+// Round-robin across the three kinds of question work so a backlog of one kind
+// (say, many fresh openings) cannot starve the others.
+export function interleaveWork(items: QuestionWork[]): QuestionWork[] {
+  const byNeed: Record<string, QuestionWork[]> = { first: [], successor: [], mid: [] };
+  for (const w of items) (byNeed[w.need] ??= []).push(w);
+  const out: QuestionWork[] = [];
+  const lists = [byNeed.first, byNeed.successor, byNeed.mid];
+  while (lists.some((l) => l.length)) for (const l of lists) { const w = l.shift(); if (w) out.push(w); }
+  return out;
+}
+
+export async function runTick(opts: { retention?: boolean; source?: string; budgetMs?: number; clock?: () => number } = {}) {
   const admin = supabaseAdmin();
-  const deadline = Deadline.in(opts.budgetMs ?? TICK_MAX_DURATION_SECONDS * 1000 - SAFETY_MARGIN_MS);
+  const clock = opts.clock ?? Date.now;
+  const deadline = Deadline.in(opts.budgetMs ?? TICK_MAX_DURATION_SECONDS * 1000 - SAFETY_MARGIN_MS, clock);
   const out: Record<string, unknown> = {};
   const stage = async (name: string, fn: () => Promise<unknown>, minMs = 1500) => {
     if (deadline.remainingMs() < minMs) { out[name] = { skipped: "deadline" }; return; }
@@ -48,42 +60,38 @@ export async function runTick(opts: { retention?: boolean; source?: string; budg
   await stage("expire", async () => { const { data, error } = await admin.rpc("expire_stale"); if (error) throw new Error(error.message); return data; });
   await stage("matching", async () => { const { data, error } = await admin.rpc("run_matching"); if (error) throw new Error(error.message); return { pairs: data }; });
   // time-sensitive and cheap: never behind the model-bound stages
-  await stage("reminders", () => sendDueReminders(Date.now(), deadline));
+  await stage("reminders", () => sendDueReminders(clock(), deadline));
   await stage("email", () => sendQueuedEmails(20, deadline));
   await stage("friendPush", () => sendFriendMessagePushes(20, {}, deadline));
 
-  // Fair scheduling: when questions are waiting (opening rounds without a question,
-  // revealed rounds without the next one, due mid-questions), moderation leaves
-  // enough of the budget for one generation so a backlog cannot starve them.
-  // The reserve is at most half of what is left, so a short (25 s) fallback tick still moderates something.
-  const questionWork = await hasQuestionWork(admin);
-  const reserve = questionWork ? Math.min(QUESTION_BUDGET_MS + 6_000, Math.floor(deadline.remainingMs() / 2)) : 0;
+  // Fair scheduling, measured AFTER the cheap stages consumed their time: when
+  // question work exists, moderation stops QUESTION_RESERVE_MS before the
+  // deadline (never leaving itself less than MODERATION_MIN_MS). The question
+  // stage then runs one item at a time while QUESTION_ITEM_MS remains, so both
+  // stages progress on every tick long enough for both; a tick shorter than that
+  // moderates first (the next tick's reserve catches the questions up).
+  const pendingQuestions = await questionWork(admin, 50);
+  const reserve = pendingQuestions.length ? Math.max(0, Math.min(QUESTION_RESERVE_MS, deadline.remainingMs() - MODERATION_MIN_MS)) : 0;
   await stage("moderation", () => processPendingBatch(20, reserve ? deadline.minus(reserve) : deadline), 6000);
 
-  // Conversations that opened but have no question yet (e.g. generation failed at open time)
   await stage("questions", async () => {
-    let asked = 0, advanced = 0;
-    const { data: fresh } = await admin.from("conversations").select("id").eq("status", "opening").eq("questions_asked", 0).limit(20);
-    for (const c of fresh ?? []) {
-      if (deadline.remainingMs() < QUESTION_BUDGET_MS) break;
-      try { await generateNextQuestion(c.id, "opening", { deadlineMs: deadline.remainingMs() - 1000 }); asked++; } catch (e) { console.warn("[tick] question", (e as Error).message); }
+    const result = { asked: 0, advanced: 0, mid: 0, failed: 0, deferred: 0 };
+    const work = interleaveWork(await questionWork(admin, 50));   // re-read: moderation may have revealed or asked some
+    for (const w of work) {
+      if (deadline.remainingMs() < QUESTION_ITEM_MS) { result.deferred += 1; continue; }
+      try {
+        if (w.need === "first") { if (await generateNextQuestion(w.id, "opening", { deadlineMs: deadline.remainingMs() - 1000 })) result.asked++; }
+        else if (w.need === "successor") { await advanceAfterReveal(w.id, deadline); result.advanced++; }
+        else if (await generateNextQuestion(w.id, "mid", { deadlineMs: deadline.remainingMs() - 1000 })) result.mid++;
+      } catch (e) {
+        // a failing conversation backs off (database) so it cannot monopolize the stage; the failure is a metric event
+        result.failed++;
+        console.warn("[tick] question", w.need, (e as Error).message);
+        await admin.rpc("note_question_failure", { p_conversation: w.id, p_error: (e as Error).message });
+      }
     }
-    // Opening conversations whose current question was revealed but the next never arrived
-    const { data: stuck } = await admin.from("conversations").select("id").eq("status", "opening").gt("questions_asked", 0).limit(50);
-    for (const c of stuck ?? []) {
-      if (deadline.remainingMs() < QUESTION_BUDGET_MS) break;
-      try { await advanceAfterReveal(c.id, deadline); advanced++; } catch (e) { console.warn("[tick] advance", (e as Error).message); }
-    }
-    // Open chats whose next shared question is due but was never generated
-    // (the moderation worker skips follow-ups when it is short on time)
-    let mid = 0;
-    const { data: due } = await admin.rpc("conversations_due_for_question", { p_limit: 20 });
-    for (const id of (due ?? []) as string[]) {
-      if (deadline.remainingMs() < QUESTION_BUDGET_MS) break;
-      try { if (await generateNextQuestion(id, "mid", { deadlineMs: deadline.remainingMs() - 1000 })) mid++; } catch (e) { console.warn("[tick] mid question", (e as Error).message); }
-    }
-    return { asked, advanced, mid };
-  }, 8_000);   // a bank/mock generation is instant; a model generation bounds itself to the budget it is handed
+    return result;
+  }, QUESTION_ITEM_MS);
 
   if (opts.retention) {
     await stage("retention", async () => { const { data, error } = await admin.rpc("purge_retention"); if (error) throw new Error(error.message); return data; });

@@ -74,7 +74,7 @@ export async function sendDueReminders(nowMs = Date.now(), deadline: Deadline = 
           }
           try {
             const payload = JSON.stringify({ title: "Common Ground", body: `Tonight's conversation hour starts in ${lead} minutes.`, url: `${env.siteUrl()}/lobby`, tag: `session-${sessionIso}` });
-            await within(deadline, "push", doPush(s, payload, lead * 60), PUSH_TIMEOUT_MS);
+            await within(deadline, "push", () => doPush(s, payload, lead * 60), PUSH_TIMEOUT_MS);
             await finish(admin, claim.id, "sent", null);
             out.push.sent++;
           } catch (e) {
@@ -101,7 +101,7 @@ export async function sendDueReminders(nowMs = Date.now(), deadline: Deadline = 
           if (!to) throw new Error("no email");
           const t = formatSessionTime(session, cfg.timezone, cfg.timezone);
           const unsub = `${env.siteUrl()}/api/reminders/unsubscribe?t=${unsubscribeToken(p.account_id)}`;
-          await within(deadline, "email", doEmail(to, "Common Ground: the conversation hour starts soon", `Today's session starts in ${lead} minutes (${t.range} ${t.tzName}).\n\nJoin at the start for the best chance of a match: ${env.siteUrl()}/lobby\n\nStop these emails: ${unsub}\nOr manage reminders under Profile → Reminders.`, { unsubscribeUrl: unsub, idempotencyKey: `reminder/${claim.id}` }), EMAIL_TIMEOUT_MS);
+          await within(deadline, "email", () => doEmail(to, "Common Ground: the conversation hour starts soon", `Today's session starts in ${lead} minutes (${t.range} ${t.tzName}).\n\nJoin at the start for the best chance of a match: ${env.siteUrl()}/lobby\n\nStop these emails: ${unsub}\nOr manage reminders under Profile → Reminders.`, { unsubscribeUrl: unsub, idempotencyKey: `reminder/${claim.id}` }), EMAIL_TIMEOUT_MS);
           await finish(admin, claim.id, "sent", null);
           out.email.sent++;
         } catch (e) {

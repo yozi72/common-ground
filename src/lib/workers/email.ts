@@ -14,11 +14,12 @@ import "server-only";
 import nodemailer from "nodemailer";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { env, LiveDeliveryBlockedError } from "@/lib/env";
-import { Deadline } from "./deadline";
+import { Deadline, within, DeadlineError } from "./deadline";
 
 export type EmailDeliverer = (args: { id: string; to: string; subject: string; text: string }) => Promise<string>;
 
 export class PermanentEmailError extends Error {}
+const EMAIL_TIMEOUT_MS = 15_000;
 
 async function deliverDefault({ id, to, subject, text }: { id: string; to: string; subject: string; text: string }): Promise<string> {
   if (!env.liveDeliveryAllowed()) throw new PermanentEmailError(new LiveDeliveryBlockedError("email").message); // hard stop, no retry
@@ -72,12 +73,14 @@ export async function sendQueuedEmails(limit = 20, deadline: Deadline = Deadline
       const to = user?.user?.email;
       if (!to) throw new PermanentEmailError("no email on account");
       const { subject, text } = tpl(env.siteUrl());
-      const via = await deliver({ id: row.id, to, subject, text });
+      // bounded by the provider timeout and what is left of the budget; the call starts only if time remains
+      const via = await within(deadline, "email", () => deliver({ id: row.id, to, subject, text }), EMAIL_TIMEOUT_MS);
       const r = await finish("sent", via);
       if (r === "sent") out.sent++; else out.cancelled++;
     } catch (e) {
       const permanent = e instanceof PermanentEmailError;
-      const r = await finish(permanent ? "failed" : "retry", (e as Error).message);
+      // a deadline is ours, not the provider's: back to the queue (SMTP may still have delivered; see the duplicate window above)
+      const r = await finish(permanent ? "failed" : "retry", e instanceof DeadlineError ? "deadline" : (e as Error).message);
       if (r === "queued") out.retried++; else if (r === "failed") out.failed++; else out.cancelled++;
     }
   }

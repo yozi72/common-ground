@@ -18,7 +18,7 @@ import webpush from "web-push";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { env } from "@/lib/env";
 import { isAllowedPushEndpoint } from "@/lib/push-endpoint";
-import { Deadline, within } from "./deadline";
+import { Deadline, within, DeadlineError } from "./deadline";
 
 type Sub = { id: string; endpoint: string; p256dh: string; auth: string };
 type Delivery = { status: "sent" | "failed" | "gone"; attempts: number; error?: string; at?: string };
@@ -55,28 +55,29 @@ export async function sendFriendMessagePushes(limit = 20, deps: FriendPushDeps =
     const finish = (outcome: "sent" | "retry" | "skipped", deliveries: Deliveries, err?: string) =>
       admin.rpc("finish_push_queue", { p_id: row.id, p_claimed_at: row.claimed_at, p_outcome: outcome, p_deliveries: deliveries, p_error: err ?? null }).then((r) => (r.data as string | null) ?? "unknown");
     const deliveries: Deliveries = { ...(row.deliveries ?? {}) };
-    if (deadline.remainingMs() < MIN_SEND_MS) {
-      // out of time: hand the claim back (queued, due now, attempt not consumed)
-      await admin.rpc("finish_push_queue", { p_id: row.id, p_claimed_at: row.claimed_at, p_outcome: "retry", p_deliveries: deliveries, p_error: "deadline", p_max_attempts: 1_000_000 });
-      await admin.from("push_queue").update({ next_attempt_at: new Date().toISOString(), attempts: 0 }).eq("id", row.id).eq("status", "queued");
-      out.released++; continue;
-    }
+    // out of time: hand the claim back untouched (queued, due now, attempts and device history kept)
+    const release = async () => { const r = await admin.rpc("release_push_queue", { p_id: row.id, p_claimed_at: row.claimed_at, p_deliveries: deliveries }); return (r.data as string | null) ?? "unknown"; };
+    if (deadline.remainingMs() < MIN_SEND_MS) { if ((await release()) === "queued") out.released++; else out.cancelled++; continue; }
     if (!send) { await finish("skipped", deliveries, "push not configured"); out.skipped++; continue; }
 
     // devices are looked up fresh on every attempt (ownership can change on a shared browser)
     const { data: subs } = await admin.from("push_subscriptions").select("id, endpoint, p256dh, auth").eq("account_id", row.account_id).is("disabled_at", null);
     const payload = JSON.stringify({ title: "Common Ground", body: "You have a new message.", url: row.conversation_id ? `${env.siteUrl()}/c/${row.conversation_id}` : `${env.siteUrl()}/connections`, tag: `friend-${row.conversation_id ?? "x"}` });
     let aborted: string | null = null;
+    let outOfTime = false;
     for (const s of (subs ?? []) as Sub[]) {
       if (deliveries[s.id]?.status === "sent") continue; // already delivered on a previous attempt
       if (!isAllowedPushEndpoint(s.endpoint)) { await admin.from("push_subscriptions").update({ disabled_at: new Date().toISOString() }).eq("id", s.id); continue; }
+      // time is checked BEFORE every device send; a transport never starts after the budget is gone
+      if (deadline.remainingMs() < MIN_SEND_MS) { outOfTime = true; break; }
       // still mine, still wanted? (a mute/read/removal/block since the claim cancels it)
       const { data: state } = await admin.rpc("recheck_push_queue", { p_id: row.id, p_claimed_at: row.claimed_at });
       if (state !== "claimed") { aborted = (state as string | null) ?? "unknown"; break; }
       try {
-        await within(deadline, "push", send(s, payload), PUSH_TIMEOUT_MS);
+        await within(deadline, "push", () => send(s, payload), PUSH_TIMEOUT_MS);
         deliveries[s.id] = { status: "sent", attempts: (deliveries[s.id]?.attempts ?? 0) + 1, at: new Date().toISOString() };
       } catch (e) {
+        if (e instanceof DeadlineError) { outOfTime = true; break; }   // our budget ran out mid-send: not a device failure
         const status = (e as { statusCode?: number }).statusCode;
         const msg = `push ${status ?? ""} ${(e as Error).message}`.trim();
         if (status !== undefined && GONE.has(status)) {
@@ -88,6 +89,7 @@ export async function sendFriendMessagePushes(limit = 20, deps: FriendPushDeps =
       }
     }
     if (aborted) { out.cancelled++; continue; } // the row's state was changed by someone else; nothing to overwrite
+    if (outOfTime) { if ((await release()) === "queued") out.released++; else out.cancelled++; continue; }   // devices sent so far are recorded; no attempt consumed
 
     const states = Object.values(deliveries);
     const transient = states.filter((d) => d.status === "failed");
