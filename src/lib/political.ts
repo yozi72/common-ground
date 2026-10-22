@@ -82,6 +82,8 @@ export function compareProfiles(a: Answers, b: Answers, aVersion = QUESTIONNAIRE
 
 export function answeredCount(a: Answers) { return QUESTIONS.filter((q) => typeof a[q.key] === "number").length; }
 
+// Server contract (complete_onboarding): at most this many tags, each from the list below.
+export const MAX_LIFE_CONTEXT = 6;
 export const LIFE_CONTEXT_OPTIONS = [
   "parent", "caregiver", "veteran", "small business", "shift work", "student", "retired",
   "faith community", "rural roots", "city life", "moved a lot", "first-generation", "unemployed recently", "health challenges",

@@ -125,8 +125,8 @@ export function Lobby(props: {
       {invitations.map((inv) => (
         <section key={inv.id} className="card space-y-3 pop" aria-live="polite" style={{ borderColor: "var(--accent)" }}>
           <Bridge className="w-32 h-auto mx-auto" />
-          <h2 className="font-semibold text-xl text-center">{inv.kind === "reconnect" ? "A friend wants to talk again" : "We found someone"}</h2>
-          <p className="muted text-sm text-center">{inv.kind === "reconnect" ? "Accepting opens a new conversation with the same aliases as before." : "They answered some questions differently from you. That's all either of you will know. The conversation opens once you both accept."}</p>
+          <h2 className="font-semibold text-xl text-center">We found someone</h2>
+          <p className="muted text-sm text-center">They answered some questions differently from you. That's all either of you will know. The conversation opens once you both accept.</p>
           <Countdown label="Time left to accept" seconds={secondsLeft(inv.expires_at)} urgent />
           {inv.my_decision === "accepted" ? (
             <p className="notice notice-ok text-center">You accepted. Waiting for the other person…</p>

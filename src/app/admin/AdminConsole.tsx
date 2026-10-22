@@ -73,17 +73,37 @@ export function AdminConsole({ review, reports, appeals, config, evidence, waiti
             <li key={r.id} className="card-flat space-y-2 text-sm">
               <p><strong>{r.reason}</strong> · {r.status} · {new Date(r.created_at).toLocaleString()}</p>
               {r.details && <p className="whitespace-pre-wrap">{r.details}</p>}
-              <details>
-                <summary className="cursor-pointer muted">What the reporter could see when they filed this (snapshot)</summary>
-                <ul className="mt-2 space-y-1">
-                  {(evidence.find((e) => e.report_id === r.id)?.context ?? []).map((c) => (
-                    <li key={c.id} className="rounded p-2" style={{ background: r.message_ids.includes(c.id) ? "var(--warn-bg)" : "var(--theirs)" }}>
-                      <span className="text-xs muted">{c.alias}{c.kind === "answer" ? " (answer)" : ""} · {new Date(c.at).toLocaleTimeString()}</span> {c.body}
-                    </li>
-                  ))}
-                  {!(evidence.find((e) => e.report_id === r.id)?.context ?? []).length && <li className="muted text-xs">No messages were visible to the reporter at the time.</li>}
-                </ul>
-              </details>
+              {(() => {
+                const ev = evidence.find((e) => e.report_id === r.id);
+                if (!ev) return <p className="muted text-xs">No evidence snapshot: this report was filed before snapshots were captured, so what the reporter saw is not available here.</p>;
+                const citedIds = new Set(ev.cited.map((c) => c.id));
+                const context = ev.context.filter((c) => !citedIds.has(c.id));
+                return (
+                  <div className="space-y-2">
+                    <div>
+                      <p className="text-xs font-semibold">Cited by the reporter ({ev.cited.length})</p>
+                      {ev.cited.length === 0 && <p className="muted text-xs">The reporter cited no specific messages.</p>}
+                      <ul className="mt-1 space-y-1">
+                        {ev.cited.map((c) => (
+                          <li key={c.id} className="rounded p-2" style={{ background: "var(--warn-bg)" }}>
+                            <span className="text-xs muted">{c.alias}{c.kind === "answer" ? " (answer)" : ""} · {new Date(c.at).toLocaleString()}</span> {c.body}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                    <details>
+                      <summary className="cursor-pointer muted text-xs">Recent context the reporter could see at the time ({context.length}{context.length ? "" : ", none"})</summary>
+                      <ul className="mt-2 space-y-1">
+                        {context.map((c) => (
+                          <li key={c.id} className="rounded p-2" style={{ background: "var(--theirs)" }}>
+                            <span className="text-xs muted">{c.alias}{c.kind === "answer" ? " (answer)" : ""} · {new Date(c.at).toLocaleTimeString()}</span> {c.body}
+                          </li>
+                        ))}
+                      </ul>
+                    </details>
+                  </div>
+                );
+              })()}
               <div className="flex gap-2 flex-wrap">
                 {r.status === "open" && <button className="btn btn-secondary text-xs" disabled={busy} onClick={() => act({ action: "resolve_report", report_id: r.id, status: "reviewing" })}>Mark reviewing</button>}
                 <button className="btn btn-primary text-xs" disabled={busy} onClick={() => act({ action: "resolve_report", report_id: r.id, status: "resolved", note: prompt("Resolution note:") ?? undefined })}>Resolve</button>

@@ -116,9 +116,11 @@ export class ChatSync<T extends ChatMsg> {
       const present = new Set(r.data.map((x) => x.id));
       for (const id of chunk) if (!present.has(id)) missing.push(id);
     }
-    // ids proven gone inside the newest page's range (deleted since the snapshot)
+    // ids proven gone inside the newest page's range: only ids that were already in
+    // the SNAPSHOT this verification started from. Anything that arrived after the
+    // snapshot (a newer refresh) is not in the page we hold and must not be touched.
     const ids = new Set(page.map((m) => m.id));
-    const goneInRange = pageOldest ? this.state.messages.filter((m) => compareMsgs(m, pageOldest) >= 0 && !ids.has(m.id)).map((m) => m.id) : [];
+    const goneInRange = pageOldest ? snapshot.filter((m) => compareMsgs(m, pageOldest) >= 0 && !ids.has(m.id)).map((m) => m.id) : [];
     const gone = [...missing, ...goneInRange];
     if (gone.length) this.set({ messages: withoutIds(this.state.messages, gone) });
   }
@@ -126,9 +128,12 @@ export class ChatSync<T extends ChatMsg> {
   remove(ids: string[]) { if (ids.length) this.set({ messages: withoutIds(this.state.messages, ids) }); }
 
   // A clear (ours or the other person's): drop everything from before it and
-  // never re-add it from an in-flight request.
+  // never re-add it from an in-flight request. The mark is the SERVER's clearing
+  // timestamp and only ever moves forward, so an older value arriving late (a
+  // stale conversation row) cannot reopen the window.
   setClearedAt(ts: string | null) {
-    if (!ts || ts === this.state.clearedAt) return;
+    if (!ts) return;
+    if (this.state.clearedAt && ts <= this.state.clearedAt) return;
     this.set({ clearedAt: ts, messages: this.state.messages.filter((m) => m.created_at >= ts), gap: null, gapTarget: null, historyDone: false });
   }
 

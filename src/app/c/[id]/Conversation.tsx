@@ -240,7 +240,7 @@ export function Conversation({ conversationId, myParticipantId, myAlias, peerAli
           <div className="flex gap-2">
             <button className={confirming === "leave" || confirming === "friend_request" || confirming === "friend_accept" ? "btn btn-primary" : "btn btn-danger"} onClick={async () => {
               if (confirming === "unfriend") { const r = await api(`/api/conversations/${conversationId}`, { action: "remove_friend", connection_id: connectionId }); if (r) { setConfirming(null); await load(); } return; }
-              if (confirming === "clear") { const r = await api(`/api/conversations/${conversationId}`, { action: "clear_history" }); if (r) { setConfirming(null); sync.setClearedAt(new Date().toISOString()); await load(); } return; }
+              if (confirming === "clear") { const r = await api(`/api/conversations/${conversationId}`, { action: "clear_history" }); if (r) { setConfirming(null); if (r.cleared_at) sync.setClearedAt(r.cleared_at); await load(); } return; }
               if (confirming === "friend_accept") { const r = await api(`/api/conversations/${conversationId}`, { action: "friend_respond", connection_id: connectionId, accept: true }); if (r) { setConfirming(null); await load(); } return; }
               if (confirming === "friend_request") { const r = await api(`/api/conversations/${conversationId}`, { action: "friend_request", connection_id: connectionId }); if (r) { setConfirming(null); await load(); } return; }
               const r = await api(`/api/conversations/${conversationId}`, { action: confirming }); if (r) router.push(isFriend ? "/connections" : `/c/${conversationId}/reflect`);

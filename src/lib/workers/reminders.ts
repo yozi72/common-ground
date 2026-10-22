@@ -12,17 +12,33 @@ import { getScheduleConfig } from "@/lib/schedule-config";
 import { sessionDueForReminder, formatSessionTime, partsWeekday } from "@/lib/schedule";
 import { unsubscribeToken } from "@/lib/unsubscribe";
 import { isAllowedPushEndpoint } from "@/lib/push-endpoint";
+import { Deadline, within } from "./deadline";
 
 const MAX_ATTEMPTS = 3;
+const PUSH_TIMEOUT_MS = 10_000;
+const EMAIL_TIMEOUT_MS = 15_000;
+const MIN_SEND_MS = 3_000;             // don't claim a send that cannot even start
+const STALE_CLAIM_MS = 3 * 60_000;     // a claim this old belongs to a worker that died
+
+export type ReminderDeps = {
+  sendPush?: (sub: { endpoint: string; p256dh: string; auth: string }, payload: string, ttlSeconds: number) => Promise<void>;
+  sendEmail?: (to: string, subject: string, text: string, opts: { unsubscribeUrl: string; idempotencyKey: string }) => Promise<void>;
+  pushConfigured?: boolean;
+  emailConfigured?: boolean;
+};
 
 function pushConfigured() {
   return !!(process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY);
 }
 
-export async function sendDueReminders(nowMs = Date.now()) {
+export async function sendDueReminders(nowMs = Date.now(), deadline: Deadline = Deadline.none(), deps: ReminderDeps = {}) {
   const admin = supabaseAdmin();
   const cfg = await getScheduleConfig();
-  const out = { session: null as string | null, push: { sent: 0, failed: 0, skipped: 0, disabled: 0 }, email: { sent: 0, failed: 0, skipped: 0 } };
+  const out = { session: null as string | null, push: { sent: 0, failed: 0, skipped: 0, disabled: 0 }, email: { sent: 0, failed: 0, skipped: 0 }, deferred: 0 };
+  const pushOn = deps.pushConfigured ?? pushConfigured();
+  const emailOn = deps.emailConfigured ?? env.emailConfigured();
+  const doPush = deps.sendPush ?? ((sub, payload, ttl) => webpush.sendNotification({ endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } }, payload, { TTL: ttl, urgency: "high", timeout: PUSH_TIMEOUT_MS }).then(() => undefined));
+  const doEmail = deps.sendEmail ?? sendEmail;
 
   // Only one lead time is supported per run per pref row; group by minutes_before.
   const { data: prefs } = await admin.from("reminder_prefs").select("account_id, push_enabled, email_enabled, mode, days, next_session_start, minutes_before")
@@ -32,7 +48,7 @@ export async function sendDueReminders(nowMs = Date.now()) {
   const byLead = new Map<number, typeof prefs>();
   for (const p of prefs) byLead.set(p.minutes_before, [...(byLead.get(p.minutes_before) ?? []), p]);
 
-  if (pushConfigured()) webpush.setVapidDetails(process.env.VAPID_SUBJECT ?? "mailto:admin@example.com", process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY!, process.env.VAPID_PRIVATE_KEY!);
+  if (pushOn && !deps.sendPush) webpush.setVapidDetails(process.env.VAPID_SUBJECT ?? "mailto:admin@example.com", process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY!, process.env.VAPID_PRIVATE_KEY!);
 
   for (const [lead, rows] of byLead) {
     const session = sessionDueForReminder(nowMs, lead, cfg);
@@ -45,12 +61,15 @@ export async function sendDueReminders(nowMs = Date.now()) {
       const wants = p.mode === "daily" || (p.mode === "weekdays" && (p.days as number[]).includes(weekday)) || (p.mode === "next" && p.next_session_start && Date.parse(p.next_session_start) === session.start);
       if (!wants) continue;
 
+      // out of budget: leave the rest unclaimed; the next minute's tick picks it up
+      if (deadline.remainingMs() < MIN_SEND_MS) { out.deferred++; continue; }
       if (p.push_enabled) {
         const { data: subs } = await admin.from("push_subscriptions").select("id, endpoint, p256dh, auth").eq("account_id", p.account_id).is("disabled_at", null);
         for (const s of subs ?? []) {
+          if (deadline.remainingMs() < MIN_SEND_MS) { out.deferred++; break; }
           const claim = await claimSend(admin, p.account_id, sessionIso, "push", s.id);
           if (!claim) continue;
-          if (!pushConfigured()) { await finish(admin, claim.id, "skipped", "push not configured"); out.push.skipped++; continue; }
+          if (!pushOn) { await finish(admin, claim.id, "skipped", "push not configured"); out.push.skipped++; continue; }
           if (!isAllowedPushEndpoint(s.endpoint)) {
             // never contact an endpoint outside the allowlist, whatever is stored
             await admin.from("push_subscriptions").update({ disabled_at: new Date().toISOString() }).eq("id", s.id);
@@ -58,7 +77,7 @@ export async function sendDueReminders(nowMs = Date.now()) {
           }
           try {
             const payload = JSON.stringify({ title: "Common Ground", body: `Tonight's conversation hour starts in ${lead} minutes.`, url: `${env.siteUrl()}/lobby`, tag: `session-${sessionIso}` });
-            await webpush.sendNotification({ endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth } }, payload, { TTL: lead * 60, urgency: "high" });
+            await within(deadline, "push", doPush(s, payload, lead * 60), PUSH_TIMEOUT_MS);
             await finish(admin, claim.id, "sent", null);
             out.push.sent++;
           } catch (e) {
@@ -75,7 +94,8 @@ export async function sendDueReminders(nowMs = Date.now()) {
         }
       }
 
-      if (p.email_enabled && env.emailConfigured()) {
+      if (p.email_enabled && emailOn) {
+        if (deadline.remainingMs() < MIN_SEND_MS) { out.deferred++; continue; }
         const claim = await claimSend(admin, p.account_id, sessionIso, "email", "email");
         if (!claim) continue;
         try {
@@ -84,7 +104,7 @@ export async function sendDueReminders(nowMs = Date.now()) {
           if (!to) throw new Error("no email");
           const t = formatSessionTime(session, cfg.timezone, cfg.timezone);
           const unsub = `${env.siteUrl()}/api/reminders/unsubscribe?t=${unsubscribeToken(p.account_id)}`;
-          await sendEmail(to, "Common Ground: the conversation hour starts soon", `Today's session starts in ${lead} minutes (${t.range} ${t.tzName}).\n\nJoin at the start for the best chance of a match: ${env.siteUrl()}/lobby\n\nStop these emails: ${unsub}\nOr manage reminders under Profile → Reminders.`, { unsubscribeUrl: unsub, idempotencyKey: `reminder/${claim.id}` });
+          await within(deadline, "email", doEmail(to, "Common Ground: the conversation hour starts soon", `Today's session starts in ${lead} minutes (${t.range} ${t.tzName}).\n\nJoin at the start for the best chance of a match: ${env.siteUrl()}/lobby\n\nStop these emails: ${unsub}\nOr manage reminders under Profile → Reminders.`, { unsubscribeUrl: unsub, idempotencyKey: `reminder/${claim.id}` }), EMAIL_TIMEOUT_MS);
           await finish(admin, claim.id, "sent", null);
           out.email.sent++;
         } catch (e) {
@@ -101,15 +121,18 @@ export async function sendDueReminders(nowMs = Date.now()) {
 
 type Claim = { id: string; attempts: number };
 
-// Insert-or-nothing claim; a failed earlier attempt (below the cap) can be re-claimed.
+// Insert-or-nothing claim; a failed earlier attempt (below the cap) can be
+// re-claimed, and so can a claim a dead worker left behind (older than STALE_CLAIM_MS).
 async function claimSend(admin: ReturnType<typeof supabaseAdmin>, account: string, session: string, channel: "push" | "email", target: string): Promise<Claim | null> {
-  const { data: inserted } = await admin.from("reminder_sends").insert({ account_id: account, session_start: session, channel, target, status: "claimed", attempts: 1 })
+  const { data: inserted } = await admin.from("reminder_sends").insert({ account_id: account, session_start: session, channel, target, status: "claimed", attempts: 1, claimed_at: new Date().toISOString() })
     .select("id, attempts").maybeSingle();
   if (inserted) return inserted;
-  // exists: retry only if it failed and is under the cap
-  const { data: existing } = await admin.from("reminder_sends").select("id, status, attempts").eq("account_id", account).eq("session_start", session).eq("channel", channel).eq("target", target).maybeSingle();
-  if (existing && existing.status === "failed" && existing.attempts < MAX_ATTEMPTS) {
-    const { data: upd } = await admin.from("reminder_sends").update({ status: "claimed", attempts: existing.attempts + 1 }).eq("id", existing.id).eq("status", "failed").select("id, attempts").maybeSingle();
+  const { data: existing } = await admin.from("reminder_sends").select("id, status, attempts, claimed_at").eq("account_id", account).eq("session_start", session).eq("channel", channel).eq("target", target).maybeSingle();
+  if (!existing || existing.attempts >= MAX_ATTEMPTS) return null;
+  const abandoned = existing.status === "claimed" && Date.now() - Date.parse(existing.claimed_at) > STALE_CLAIM_MS;
+  if (existing.status === "failed" || abandoned) {
+    const { data: upd } = await admin.from("reminder_sends").update({ status: "claimed", attempts: existing.attempts + 1, claimed_at: new Date().toISOString() })
+      .eq("id", existing.id).eq("status", existing.status).eq("attempts", existing.attempts).select("id, attempts").maybeSingle();   // only if nobody else got there first
     return upd ?? null;
   }
   return null;

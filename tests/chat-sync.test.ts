@@ -120,3 +120,71 @@ describe("chat sync orchestration (audit 11)", () => {
     expect(newest.id).toBe("m0500");                 // the newest loaded message, which the read mark is bounded to
   });
 });
+
+describe("chat sync: late responses never remove newer data or reopen a clear (eighth review)", () => {
+  it("a verification whose page was captured BEFORE new messages arrived does not remove them", async () => {
+    const srv = server(range(1, 300));
+    const sync = new ChatSync<M>(srv.f, () => {}, PAGE);
+    await sync.refresh();
+    // verification captures its page now (1..300 → newest 101..300), then is held
+    let release!: () => void;
+    const held = new Promise<void>((r) => { release = r; });
+    const got = { page: null as M[] | null };
+    const latest = srv.f.latest;
+    srv.f.latest = async () => { const r = await latest(); got.page = r.data; await held; return r; };
+    const verifying = sync.verify();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(got.page).not.toBeNull();                 // the old page is in hand before anything new exists
+    srv.f.latest = latest;
+    srv.add(range(301, 310));                         // new arrivals
+    await sync.refresh();
+    expect(sync.current.messages.length).toBe(210);  // newest 200 were cached, plus the 10 arrivals
+    release();
+    await verifying;
+    expect(sync.current.messages.length).toBe(210);  // the late, older page removed nothing
+    expect(ids(sync.current.messages)).toContain("m0310");
+  });
+
+  it("an older clearing timestamp cannot replace a newer one; a response captured before the clear is filtered", async () => {
+    const srv = server(range(1, 100));
+    const sync = new ChatSync<M>(srv.f, () => {}, PAGE);
+    await sync.refresh();
+    let release!: () => void;
+    const held = new Promise<void>((r) => { release = r; });
+    const got = { page: null as M[] | null };
+    const latest = srv.f.latest;
+    srv.f.latest = async () => { const r = await latest(); got.page = r.data; await held; return r; };
+    const inflight = sync.refresh();                  // page with 1..100 captured, delivery delayed
+    await new Promise((r) => setTimeout(r, 0));
+    expect(got.page?.length).toBe(100);
+    srv.f.latest = latest;
+    const newer = new Date(Date.UTC(2026, 9, 20, 0, 1, 20)).toISOString();  // after msg 79
+    const older = new Date(Date.UTC(2026, 9, 20, 0, 1, 0)).toISOString();   // after msg 59
+    sync.setClearedAt(newer);
+    sync.setClearedAt(older);                         // stale conversation row arriving late
+    expect(sync.current.clearedAt).toBe(newer);
+    expect(sync.current.messages.length).toBe(21);   // 80..100
+    release();
+    await inflight;
+    expect(sync.current.messages.length).toBe(21);   // 1..79 did not come back
+    expect(ids(sync.current.messages)[0]).toBe("m0080");
+  });
+
+  it("an older-history page in flight across a clear is filtered too", async () => {
+    const srv = server(range(1, 400));
+    const sync = new ChatSync<M>(srv.f, () => {}, PAGE);
+    await sync.refresh();                             // 201..400
+    let release!: () => void;
+    const held = new Promise<void>((r) => { release = r; });
+    const older = srv.f.older;
+    srv.f.older = async (c) => { const r = await older(c); await held; return r; };
+    const loading = sync.loadOlder();                 // 1..200 captured, delayed
+    await new Promise((r) => setTimeout(r, 0));
+    const clearedAt = new Date(Date.UTC(2026, 9, 20, 0, 5, 0)).toISOString();   // after msg 299
+    sync.setClearedAt(clearedAt);
+    release();
+    await loading;
+    expect(ids(sync.current.messages)[0]).toBe("m0300");
+    expect(sync.current.messages.length).toBe(101);
+  });
+});

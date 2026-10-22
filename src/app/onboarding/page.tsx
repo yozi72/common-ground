@@ -2,7 +2,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabaseBrowser } from "@/lib/supabase/client";
-import { QUESTIONS, QUESTIONNAIRE_VERSION, UNSURE_LABEL, DECLINE_LABEL, LIFE_CONTEXT_OPTIONS, MIN_SHARED_ANSWERS, normalize, type Answers, type NonAnswers } from "@/lib/political";
+import { QUESTIONS, QUESTIONNAIRE_VERSION, UNSURE_LABEL, DECLINE_LABEL, LIFE_CONTEXT_OPTIONS, MAX_LIFE_CONTEXT, MIN_SHARED_ANSWERS, normalize, type Answers, type NonAnswers } from "@/lib/political";
 import { Compass, Sprout, QuestionGlyph } from "@/components/Illustrations";
 
 const TERMS_VERSION = "pilot-v1";
@@ -118,11 +118,13 @@ export default function Onboarding() {
           <Select label="Region" value={region} onChange={setRegion} options={["northeast", "midwest", "south", "west", "other"]} />
           <Select label="Where you live" value={community} onChange={setCommunity} options={["urban", "suburban", "rural", "mixed"]} />
           <fieldset>
-            <legend className="eyebrow mb-2">Life context — pick any</legend>
-            <div className="flex flex-wrap gap-2">
+            <legend className="eyebrow mb-2">Life context — pick up to {MAX_LIFE_CONTEXT}</legend>
+            <p className="muted text-xs mb-2" id="context-count" aria-live="polite">{context.length} of {MAX_LIFE_CONTEXT} selected{context.length >= MAX_LIFE_CONTEXT ? " · unselect one to choose another" : ""}</p>
+            <div className="flex flex-wrap gap-2" aria-describedby="context-count">
               {LIFE_CONTEXT_OPTIONS.map((o) => {
                 const on = context.includes(o);
-                return <button type="button" key={o} className="chip" aria-pressed={on} onClick={() => setContext(on ? context.filter((c) => c !== o) : [...context, o])}>{o}</button>;
+                const full = !on && context.length >= MAX_LIFE_CONTEXT;
+                return <button type="button" key={o} className="chip" aria-pressed={on} aria-disabled={full} style={full ? { opacity: 0.5 } : undefined} onClick={() => { if (full) return; setContext(on ? context.filter((c) => c !== o) : [...context, o]); }}>{o}</button>;
               })}
             </div>
           </fieldset>

@@ -1,21 +1,26 @@
 import { z } from "zod";
 
+// Fail-closed: `decision` must be one of four values. The other fields are
+// advisory and a model may omit them or send null; both are accepted
+// deliberately (an omitted or null list is "none", a null confidence is 0.5).
+// Anything else (wrong types, out-of-range numbers) still fails validation,
+// which keeps the message pending.
 export const ModerationDecisionSchema = z.object({
   decision: z.enum(["allow", "revise", "block", "review"]),
-  categories: z.array(z.string().max(60)).max(10).default([]),
-  user_explanation: z.string().max(600).nullable().default(null),
-  suggested_revision: z.string().max(2000).nullable().default(null),
-  confidence: z.number().min(0).max(1).default(0.5),
+  categories: z.array(z.string().max(60)).max(10).nullable().optional().transform((v) => v ?? []),
+  user_explanation: z.string().max(600).nullable().optional().transform((v) => v ?? null),
+  suggested_revision: z.string().max(2000).nullable().optional().transform((v) => v ?? null),
+  confidence: z.number().min(0).max(1).nullable().optional().transform((v) => v ?? 0.5),
 });
 export type ModerationDecision = z.infer<typeof ModerationDecisionSchema>;
 
 export const GeneratedQuestionSchema = z.object({
   shared_question: z.string().min(10).max(240),
   choices: z.array(z.string().min(2).max(120)).length(3),
-  optional_followup_a: z.string().max(240).nullable().default(null),
-  optional_followup_b: z.string().max(240).nullable().default(null),
-  rationale_internal: z.string().max(600).default(""),
-  sensitive_topic_flag: z.boolean().default(false),
+  optional_followup_a: z.string().max(240).nullable().optional().transform((v) => v ?? null),
+  optional_followup_b: z.string().max(240).nullable().optional().transform((v) => v ?? null),
+  rationale_internal: z.string().max(600).nullable().optional().transform((v) => v ?? ""),
+  sensitive_topic_flag: z.boolean().nullable().optional().transform((v) => v ?? false),
 });
 export type GeneratedQuestion = z.infer<typeof GeneratedQuestionSchema>;
 

@@ -27,7 +27,7 @@ Short status for anyone reviewing this codebase (including an AI reviewer). Upda
 - Leave / block / report; partner-away notice (≤2 min); abandonment; reflection; mutual-consent "Friends" with one persistent chat per friendship under the same aliases (see "Friend chats" below); account + data deletion; retention purge.
 - Profile stats (people talked with, conversations, mutual friends) and 13 participation badges; the other participant sees only coarse tiers (`peer_badges`), never exact counts.
 - Admin review console at `/admin` for the `ADMIN_EMAIL` account (held messages, reports, appeals, policy knobs).
-- 152 tests across 12 files (integration against a local Supabase + unit) (`npm test`), lint, typecheck, production build.
+- 172 tests across 14 files (integration against a local Supabase + unit) (`npm test`), lint, typecheck, production build.
 
 ## Unfinished, mocked, or known issues
 
@@ -112,6 +112,27 @@ All nine findings were confirmed and fixed in `2c165c7` (migration `0004_review_
 | 6 | Push stayed attached to the previous account on a shared browser | “This device is set up” only when the browser subscription is registered to the current account; Sign out detaches the device subscription first (`SignOutButton`) | pilot “endpoint belongs to one account” (+ manual) |
 | 7 | Success metric counted one participant | `conversation_opened` logged for both participants | pilot “metric is recorded for both participants” |
 | — | Sign-in page wording | mentions optional session reminders | — |
+
+## Eighth review (912eb92 / 6afa83a) — status
+
+| # | Finding | Status | Fix (file / function) | Regression test |
+|---|---|---|---|---|
+| 1 | Retention cascaded through pending answers into open appeals | Confirmed (FK chain `conversation_questions → pending_messages → appeals`, all cascade) | `purge_retention` keeps a question while a pending answer to it is under an open appeal (migration 0015); answers/messages are still removed; resolution still works on the retained rows | pilot "1. retention keeps the question and answer an open appeal needs…" |
+| 2 | Stats vanished with retained question rows | Confirmed | Content-free marks `conversations.counted_at` (first reveal) and `full_round_at` (round complete) set in `maybe_reveal_question`, backfilled; `account_stats` reads them | pilot "2. participation stats and badge eligibility survive retention and history clearing" |
+| 3 | Two deadlock paths | Confirmed by lock mapping (cycles clear↔delivery and report/block↔remove existed); the earlier reveal↔delivery cycle had been reproduced | Documented lock order in migration 0015: account advisory locks → connections → conversations (NO KEY UPDATE) → questions → pending rows → leaves. `apply_moderation_decision` locks the conversation before the pending row; `block_peer`/`remove_friend` end the conversation before touching pending rows; `report_peer` takes account locks first; `clear_thread_history` uses NO KEY UPDATE | pilot "3. concurrent clear vs delivery, report-and-block vs end, request vs end…" (real concurrent transactions, 10 races), "14. reveal and moderation share one lock order" |
+| 4 | Verification race; clear timestamp regression | Confirmed | `ChatSync.verify` removes only ids from the snapshot it started from; `setClearedAt` only moves forward and uses the server's `cleared_at` (returned by `clear_thread_history`, never the device clock) | `tests/chat-sync.test.ts` (page captured before new arrivals, out-of-order clear marks, older page across a clear) |
+| 5 | Only context rendered | Confirmed | `AdminConsole` renders cited messages first, context deduplicated, honest message for legacy reports without a snapshot | pilot "5. a cited message older than the context window…"; browser (admin console) |
+| 6 | Deadlines missing in reminders/pushes/admin paths; questions starved | Confirmed | `sendDueReminders(now, deadline, deps)` and `sendFriendMessagePushes(limit, deps, deadline)` stop claiming when out of budget, bound each send (`within`, 10 s push / 15 s email timeouts), release unused friend-push claims; `reminder_sends.claimed_at` with recovery of claims older than 3 minutes; the tick reserves one generation's budget for questions when question work exists; admin/invitation/question routes pass explicit budgets | pilot "6. deadlines: reminders stop claiming…" (controllable clock, slow provider, abandoned claim, friend-push release, 25 s tick) |
+| 7 | "call me later" / "my name is secret" flagged | Confirmed (`gi` flag made the captured word case-insensitive) | Lead-ins matched in any case, captured words validated separately (Capitalized or ALL CAPS) with a non-name stoplist; limits documented in `detectors.ts` | `tests/detector-table.test.ts` (55 phrases) |
+| 8 | UI said "pick any", server allows 6 | Confirmed | `MAX_LIFE_CONTEXT = 6` shared; counter, aria-disabled chips, answers preserved on validation error; same component edits an existing profile | pilot "12." (7 tags refused); browser |
+| 9 | Feature setting not enforced on existing threads/acceptance | Confirmed | `thread_contact_allowed` includes the gate; `respond_friend_request` checks it; delivery re-check inherits it; relationships and history untouched; consent events: `contact_sharing_request` (one person) vs `contact_sharing` (mutual, both at acceptance) | pilot "9. the contact-sharing setting gates…" |
+| 10a | Cron auth in development | Confirmed (configured secret with a missing header passed) | `authorizeCron`: a configured secret is required everywhere; only a missing secret opens development | `tests/cron-auth.test.ts` |
+| 10b | Zod null handling | Confirmed by inspection: `categories: null` / `confidence: null` failed validation (defaults apply to undefined only) | Nullable + optional with explicit transforms; `decision` and types stay strict | `tests/cron-auth.test.ts` (schemas) |
+| 10c | Per-account budget | Not as described: no per-account limit was ever promised; the global per-task limit existed. Implemented per-account attribution anyway: `take_model_budget(task, accounts)` counts the sender for moderation and both participants for a shared question; `model_calls_per_day_per_account` (0 = unlimited) | pilot "10. budgets are per task and per account…" |
+| 10d | `both_yes` derived from any connection | Confirmed | `my_recent_conversations` returns `both_yes` for this conversation and `connected` for the pair separately; Chats, lobby nudge and reflection use `connected` | pilot "10." (rematch while connected) |
+| 10e | Lobby reconnect copy | Confirmed unreachable (`reconnect` invitations were dropped in migration 0008) | Removed from `Lobby.tsx` | — |
+| 10f | HANDOFF said detectors are not applied in friends tier | Confirmed wrong since migration 0014 | Corrected (hints only) | — |
+| 10g | Admin model-call path | Confirmed unbounded | Admin, invitation and on-demand question routes pass explicit budgets | — (inspection) |
 
 ## Seventh review (99c121a / a6ca19d / migration 0013) — status
 
@@ -233,6 +254,8 @@ Dependency audit: `npm audit --omit=dev` reports 0 vulnerabilities; `npm audit` 
 - Scheduler: `worker_config` rows `tick_url` and `cron_secret` on the hosted database (set via service role); the cron job `common-ground-tick` is created by migration 0005.
 
 ## Change log
+
+- 2026-10-22 — Eighth review: appeal-safe retention, durable participation marks, one documented lock order (two more cycles removed), sync races closed with a server clear mark, cited evidence rendered, deadlines through reminders/pushes/admin paths with claim recovery and a question reserve, detector phrase table, life-context limit in the UI, contact-sharing gate everywhere with request-vs-activation consent, cron auth in every environment, schema null handling, per-account budget attribution, recent-conversation semantics. Migration 0015. 172 tests.
 
 - 2026-10-21 — Seventh review: private declines with shared expiry, connection state preserved on repeats, reflection shows real connection state, complete clearing with report evidence snapshots, delivery-time permission re-check, scoped friends-tier screening and hints, detector rewrite, end-to-end deadlines, chat sync module, onboarding validation, metrics/appeal/unsubscribe correctness, NO KEY UPDATE lock order, safe duplicate sends, OTP allowlist, chats-vs-friends stats, model budget. Migration 0014. 152 tests.
 

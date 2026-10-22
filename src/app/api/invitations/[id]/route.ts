@@ -16,7 +16,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     if (result.status === "opened" && result.conversation_id) {
       const convId = result.conversation_id;
       after(async () => {
-        try { await generateNextQuestion(convId, "opening"); } catch (e) { console.warn("[invitation] first question", (e as Error).message); }
+        try { await generateNextQuestion(convId, "opening", { deadlineMs: 40_000 }); } catch (e) { console.warn("[invitation] first question", (e as Error).message); }
       });
     }
     return ok(result);

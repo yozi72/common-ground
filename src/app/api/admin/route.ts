@@ -3,6 +3,7 @@ import { handle, ok, parseBody, requireAdmin } from "@/lib/api";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { advanceAfterReveal } from "@/lib/workers/moderation";
 import { generateNextQuestion } from "@/lib/workers/questions";
+import { Deadline } from "@/lib/workers/deadline";
 
 // Admin review actions. The caller must be the configured admin (is_admin()),
 // then the service role applies the decision through the same enforcement
@@ -13,6 +14,8 @@ const Body = z.discriminatedUnion("action", [
   z.object({ action: z.literal("resolve_appeal"), appeal_id: z.string().uuid(), status: z.enum(["upheld", "overturned"]), note: z.string().max(2000).optional() }),
   z.object({ action: z.literal("set_config"), key: z.string().max(60), value: z.unknown() }),
 ]);
+
+export const maxDuration = 60; // admin follow-up generation runs inside this budget
 
 export async function POST(req: Request) {
   return handle(async () => {
@@ -29,8 +32,8 @@ export async function POST(req: Request) {
       if (error) throw new Error(error.message);
       const o = (data ?? {}) as { question_due?: boolean; revealed?: boolean };
       const { data: row } = await admin.from("pending_messages").select("conversation_id").eq("id", b.pending_id).single();
-      if (row && o.question_due) await generateNextQuestion(row.conversation_id, "mid");
-      if (row && o.revealed) await advanceAfterReveal(row.conversation_id);
+      if (row && o.question_due) await generateNextQuestion(row.conversation_id, "mid", { deadlineMs: 40_000 });
+      if (row && o.revealed) await advanceAfterReveal(row.conversation_id, Deadline.in(40_000));
       return ok(data);
     }
     if (b.action === "resolve_report") {
@@ -46,8 +49,8 @@ export async function POST(req: Request) {
       const o = (data ?? {}) as { question_due?: boolean; revealed?: boolean; pending_id?: string };
       if (o.pending_id && (o.question_due || o.revealed)) {
         const { data: row } = await admin.from("pending_messages").select("conversation_id").eq("id", o.pending_id).single();
-        if (row && o.question_due) await generateNextQuestion(row.conversation_id, "mid");
-        if (row && o.revealed) await advanceAfterReveal(row.conversation_id);
+        if (row && o.question_due) await generateNextQuestion(row.conversation_id, "mid", { deadlineMs: 40_000 });
+        if (row && o.revealed) await advanceAfterReveal(row.conversation_id, Deadline.in(40_000));
       }
       return ok(data);
     }

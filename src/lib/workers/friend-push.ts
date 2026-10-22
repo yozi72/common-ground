@@ -18,6 +18,7 @@ import webpush from "web-push";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { env } from "@/lib/env";
 import { isAllowedPushEndpoint } from "@/lib/push-endpoint";
+import { Deadline, within } from "./deadline";
 
 type Sub = { id: string; endpoint: string; p256dh: string; auth: string };
 type Delivery = { status: "sent" | "failed" | "gone"; attempts: number; error?: string; at?: string };
@@ -30,16 +31,20 @@ export type FriendPushDeps = {
 };
 
 const GONE = new Set([404, 410]);
+const PUSH_TIMEOUT_MS = 10_000;
+const MIN_SEND_MS = 3_000;
 
 function defaultSender(): PushSender {
   webpush.setVapidDetails(process.env.VAPID_SUBJECT ?? "mailto:admin@example.com", process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY!, process.env.VAPID_PRIVATE_KEY!);
-  return (sub, payload) => webpush.sendNotification({ endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } }, payload, { TTL: 6 * 3600, urgency: "normal" }).then(() => undefined);
+  return (sub, payload) => webpush.sendNotification({ endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } }, payload, { TTL: 6 * 3600, urgency: "normal", timeout: PUSH_TIMEOUT_MS }).then(() => undefined);
 }
 
-export async function sendFriendMessagePushes(limit = 20, deps: FriendPushDeps = {}) {
+export async function sendFriendMessagePushes(limit = 20, deps: FriendPushDeps = {}, deadline: Deadline = Deadline.none()) {
   const admin = supabaseAdmin();
-  const out = { sent: 0, retried: 0, failed: 0, skipped: 0, cancelled: 0 };
-  const { data: rows, error } = await admin.rpc("claim_push_queue", { p_limit: limit });
+  const out = { sent: 0, retried: 0, failed: 0, skipped: 0, cancelled: 0, released: 0 };
+  if (deadline.remainingMs() < MIN_SEND_MS) return out;                   // claim nothing that cannot start
+  const n = Math.max(1, Math.min(limit, Math.floor(deadline.remainingMs() / MIN_SEND_MS)));
+  const { data: rows, error } = await admin.rpc("claim_push_queue", { p_limit: n });
   if (error) throw new Error(`claim_push_queue: ${error.message}`);
   if (!rows?.length) return out;
   const configured = deps.configured ?? env.pushConfigured();
@@ -49,6 +54,12 @@ export async function sendFriendMessagePushes(limit = 20, deps: FriendPushDeps =
     const finish = (outcome: "sent" | "retry" | "skipped", deliveries: Deliveries, err?: string) =>
       admin.rpc("finish_push_queue", { p_id: row.id, p_claimed_at: row.claimed_at, p_outcome: outcome, p_deliveries: deliveries, p_error: err ?? null }).then((r) => (r.data as string | null) ?? "unknown");
     const deliveries: Deliveries = { ...(row.deliveries ?? {}) };
+    if (deadline.remainingMs() < MIN_SEND_MS) {
+      // out of time: hand the claim back (queued, due now, attempt not consumed)
+      await admin.rpc("finish_push_queue", { p_id: row.id, p_claimed_at: row.claimed_at, p_outcome: "retry", p_deliveries: deliveries, p_error: "deadline", p_max_attempts: 1_000_000 });
+      await admin.from("push_queue").update({ next_attempt_at: new Date().toISOString(), attempts: 0 }).eq("id", row.id).eq("status", "queued");
+      out.released++; continue;
+    }
     if (!send) { await finish("skipped", deliveries, "push not configured"); out.skipped++; continue; }
 
     // devices are looked up fresh on every attempt (ownership can change on a shared browser)
@@ -62,7 +73,7 @@ export async function sendFriendMessagePushes(limit = 20, deps: FriendPushDeps =
       const { data: state } = await admin.rpc("recheck_push_queue", { p_id: row.id, p_claimed_at: row.claimed_at });
       if (state !== "claimed") { aborted = (state as string | null) ?? "unknown"; break; }
       try {
-        await send(s, payload);
+        await within(deadline, "push", send(s, payload), PUSH_TIMEOUT_MS);
         deliveries[s.id] = { status: "sent", attempts: (deliveries[s.id]?.attempts ?? 0) + 1, at: new Date().toISOString() };
       } catch (e) {
         const status = (e as { statusCode?: number }).statusCode;

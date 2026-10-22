@@ -83,7 +83,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
         const { data: allowed, error } = await supabase.rpc("can_request_question", { p_conversation: id });
         if (error) throw fromRpcError(error);
         if (!allowed) return ok({ created: false });
-        const qid = await generateNextQuestion(id, "mid");
+        const qid = await generateNextQuestion(id, "mid", { deadlineMs: 40_000 });
         return ok({ created: !!qid });
       }
       case "remove_friend": {
@@ -105,7 +105,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
       case "clear_history": {
         const { data, error } = await supabase.rpc("clear_thread_history", { p_conversation: id });
         if (error) throw fromRpcError(error);
-        return ok({ deleted: data });
+        return ok((data ?? {}) as { deleted: number; cleared_at: string });
       }
       case "reflection": {
         const { data: pid } = await supabase.rpc("my_participant_id", { p_conversation: id });
