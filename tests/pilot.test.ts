@@ -783,17 +783,20 @@ describe("reminders", () => {
     const nextStart = (await import("@/lib/schedule")).nextSessions(Date.now() + 3 * 3600_000, 1, cfg)[0].start;
     const at = nextStart - 9 * 60_000;
     expect(sessionDueForReminder(at, 10, cfg)?.start).toBe(nextStart);
-    const r1 = await sendDueReminders(at, Deadline.none(), { emailConfigured: false });
-    const r2 = await sendDueReminders(at, Deadline.none(), { emailConfigured: false }); // overlapping run
+    // Injected sender that always fails: exercises claims and bounded retries
+    // with no network (tests never reach a real push or email provider).
+    const failing = { emailConfigured: false, pushConfigured: true, sendPush: async () => { throw new Error("simulated provider failure"); } };
+    const r1 = await sendDueReminders(at, Deadline.none(), failing);
+    const r2 = await sendDueReminders(at, Deadline.none(), failing); // overlapping run
     const { data: sends } = await admin().from("reminder_sends").select("status, attempts, target").eq("account_id", a.id);
     expect(sends!.length).toBe(1);
     expect(sends![0].target).toBe(subId);
-    expect(["failed", "sent"]).toContain(sends![0].status); // bogus endpoint fails; a real one would send
+    expect(sends![0].status).toBe("failed");
     expect(r1.push.sent + r1.push.failed + r1.push.skipped + r1.push.disabled).toBe(1);
     expect(sends![0].attempts).toBeLessThanOrEqual(3);
     void r2;
     // bounded retries
-    for (let i = 0; i < 3; i++) await sendDueReminders(at, Deadline.none(), { emailConfigured: false });
+    for (let i = 0; i < 3; i++) await sendDueReminders(at, Deadline.none(), failing);
     const { data: sends2 } = await admin().from("reminder_sends").select("attempts").eq("account_id", a.id).single();
     expect(sends2!.attempts).toBeLessThanOrEqual(3);
     // stale: after the session started nothing is sent for it

@@ -27,17 +27,14 @@ export type ReminderDeps = {
   emailConfigured?: boolean;
 };
 
-function pushConfigured() {
-  return !!(process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY);
-}
 
 export async function sendDueReminders(nowMs = Date.now(), deadline: Deadline = Deadline.none(), deps: ReminderDeps = {}) {
   const admin = supabaseAdmin();
   const cfg = await getScheduleConfig();
   const out = { session: null as string | null, push: { sent: 0, failed: 0, skipped: 0, disabled: 0 }, email: { sent: 0, failed: 0, skipped: 0 }, deferred: 0 };
-  const pushOn = deps.pushConfigured ?? pushConfigured();
+  const pushOn = deps.pushConfigured ?? env.pushConfigured();
   const emailOn = deps.emailConfigured ?? env.emailConfigured();
-  const doPush = deps.sendPush ?? ((sub, payload, ttl) => webpush.sendNotification({ endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } }, payload, { TTL: ttl, urgency: "high", timeout: PUSH_TIMEOUT_MS }).then(() => undefined));
+  const doPush = deps.sendPush ?? ((sub, payload, ttl) => { env.assertLiveDelivery("push"); return webpush.sendNotification({ endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } }, payload, { TTL: ttl, urgency: "high", timeout: PUSH_TIMEOUT_MS }).then(() => undefined); });
   const doEmail = deps.sendEmail ?? sendEmail;
 
   // Only one lead time is supported per run per pref row; group by minutes_before.
@@ -151,6 +148,7 @@ async function retryOrFail(admin: ReturnType<typeof supabaseAdmin>, claim: Claim
 // to the URL; a plain GET of the same URL only shows a confirmation page). Resend sends
 // carry an Idempotency-Key so a retried call can't double-deliver.
 async function sendEmail(to: string, subject: string, text: string, opts: { unsubscribeUrl: string; idempotencyKey: string }) {
+  env.assertLiveDelivery("email"); // hard stop before any provider, whatever the env holds
   const headers = { "List-Unsubscribe": `<${opts.unsubscribeUrl}>`, "List-Unsubscribe-Post": "List-Unsubscribe=One-Click" };
   const key = env.resendApiKey();
   if (key) {

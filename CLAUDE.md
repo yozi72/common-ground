@@ -17,6 +17,7 @@ An anonymous, moderated text-conversation pilot that pairs adults who answered a
 - Workers: `src/lib/workers/*`; `/api/cron/tick` is called every minute by `pg_cron` in the hosted database (`worker_config` holds URL + secret).
 - Deploy: Vercel project `common-ground` (free plan) via `npx vercel deploy --prod --yes`; env vars on Vercel; GitHub `yozi72/common-ground` (public).
 - Tests: `npm test` (vitest; needs local Supabase and `.env.local` exported). Probe of the real model: `npm run probe` (costs API calls).
+- Delivery isolation (incident 2026-10-21): `env.liveDeliveryAllowed()` is false under vitest and, outside production, unless `ALLOW_LIVE_DELIVERY=true`; every real email/push sender calls `env.assertLiveDelivery()` first; `tests/setup.ts` strips provider credentials, fakes nodemailer/web-push, blocks non-local fetch and refuses a non-local database. New senders must go through `env` and call the hard stop; never read `SMTP_*`/`RESEND_API_KEY`/VAPID vars directly.
 
 ## Two kinds of conversation (lasting distinction)
 - **Live session with a new person** (`conversations.kind = 'live'`): only during the daily session window, via queue → invitation (60 s) → two-party acceptance; opening round of shared questions; presence/partner-away/abandonment rules; at most one active live conversation per person (`has_active_conversation`, live only); feeds matching metrics.

@@ -11,6 +11,9 @@ export default defineConfig({
   },
   test: {
     include: ["tests/**/*.test.ts"],
+    // Delivery isolation: strips provider credentials, fakes nodemailer/web-push,
+    // blocks non-local fetch, refuses a non-local database. See tests/setup.ts.
+    setupFiles: ["tests/setup.ts"],
     testTimeout: 60_000,
     hookTimeout: 60_000,
     fileParallelism: false,

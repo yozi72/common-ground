@@ -35,6 +35,7 @@ const PUSH_TIMEOUT_MS = 10_000;
 const MIN_SEND_MS = 3_000;
 
 function defaultSender(): PushSender {
+  env.assertLiveDelivery("push"); // hard stop before any provider, whatever the env holds
   webpush.setVapidDetails(process.env.VAPID_SUBJECT ?? "mailto:admin@example.com", process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY!, process.env.VAPID_PRIVATE_KEY!);
   return (sub, payload) => webpush.sendNotification({ endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } }, payload, { TTL: 6 * 3600, urgency: "normal", timeout: PUSH_TIMEOUT_MS }).then(() => undefined);
 }

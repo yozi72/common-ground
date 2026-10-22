@@ -113,6 +113,12 @@ All nine findings were confirmed and fixed in `2c165c7` (migration `0004_review_
 | 7 | Success metric counted one participant | `conversation_opened` logged for both participants | pilot “metric is recorded for both participants” |
 | — | Sign-in page wording | mentions optional session reminders | — |
 
+## Email isolation incident (2026-10-21) — resolved
+- **Cause:** local `npm test` runs sourced `.env.local` (Gmail SMTP credentials) and the reminder/outbox workers, run directly or through `runTick` in tests, used the real transport. The test harness opens a session window in the local database, so every test account with `email_enabled` was emailed for real; `@test.local` bounced. Hosted project checked read-only: no test accounts, no queued outbox rows, no email reminder sends; the production scheduler was not involved. Supabase auth emails were never sent by tests (admin-created, pre-confirmed users; local auth mail goes to Mailpit).
+- **State now:** nothing running, nothing queued locally or hosted; reminder channels switched off for every local `@test.local` account; real accounts untouched.
+- **Guarantees added:** `env.liveDeliveryAllowed()` (false under vitest; false outside production unless `ALLOW_LIVE_DELIVERY=true`) gates `emailConfigured()`/`pushConfigured()`/`smtp()`/`resendApiKey()`; every real sender calls `env.assertLiveDelivery()` first; `tests/setup.ts` strips credentials, fakes nodemailer/web-push, blocks non-local `fetch`, refuses a non-local database. `tests/email-isolation.test.ts` (9 tests) proves a forced reminder send, outbox send, friend push and a full worker tick with credentials present reach no provider.
+- **For reviewers:** to send real email from a local dev server on purpose, set `ALLOW_LIVE_DELIVERY=true` for that process only. Production on Vercel is unaffected.
+
 ## Eighth review (912eb92 / 6afa83a) — status
 
 | # | Finding | Status | Fix (file / function) | Regression test |

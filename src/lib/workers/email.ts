@@ -13,7 +13,7 @@
 import "server-only";
 import nodemailer from "nodemailer";
 import { supabaseAdmin } from "@/lib/supabase/admin";
-import { env } from "@/lib/env";
+import { env, LiveDeliveryBlockedError } from "@/lib/env";
 import { Deadline } from "./deadline";
 
 export type EmailDeliverer = (args: { id: string; to: string; subject: string; text: string }) => Promise<string>;
@@ -21,6 +21,7 @@ export type EmailDeliverer = (args: { id: string; to: string; subject: string; t
 export class PermanentEmailError extends Error {}
 
 async function deliverDefault({ id, to, subject, text }: { id: string; to: string; subject: string; text: string }): Promise<string> {
+  if (!env.liveDeliveryAllowed()) throw new PermanentEmailError(new LiveDeliveryBlockedError("email").message); // hard stop, no retry
   const key = env.resendApiKey();
   if (key) {
     const res = await fetch("https://api.resend.com/emails", {
