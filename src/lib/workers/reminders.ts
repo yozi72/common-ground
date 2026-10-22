@@ -31,7 +31,7 @@ export type ReminderDeps = {
 export async function sendDueReminders(nowMs = Date.now(), deadline: Deadline = Deadline.none(), deps: ReminderDeps = {}) {
   const admin = supabaseAdmin();
   const cfg = await getScheduleConfig();
-  const out = { session: null as string | null, push: { sent: 0, failed: 0, skipped: 0, disabled: 0 }, email: { sent: 0, failed: 0, skipped: 0 }, deferred: 0 };
+  const out = { session: null as string | null, push: { sent: 0, failed: 0, skipped: 0, disabled: 0, released: 0 }, email: { sent: 0, failed: 0, skipped: 0, released: 0 }, deferred: 0 };
   const pushOn = deps.pushConfigured ?? env.pushConfigured();
   const emailOn = deps.emailConfigured ?? env.emailConfigured();
   const doPush = deps.sendPush ?? ((sub, payload, ttl, timeoutMs) => { env.assertLiveDelivery("push"); return webpush.sendNotification({ endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } }, payload, { TTL: ttl, urgency: "high", timeout: Math.max(1_000, Math.min(PUSH_TIMEOUT_MS, timeoutMs ?? PUSH_TIMEOUT_MS)) }).then(() => undefined); });
@@ -72,13 +72,17 @@ export async function sendDueReminders(nowMs = Date.now(), deadline: Deadline = 
             await admin.from("push_subscriptions").update({ disabled_at: new Date().toISOString() }).eq("id", s.id);
             await finish(admin, claim.id, "skipped", "endpoint not allowed"); out.push.skipped++; continue;
           }
+          let started = false;
           try {
             const payload = JSON.stringify({ title: "Common Ground", body: `Tonight's conversation hour starts in ${lead} minutes.`, url: `${env.siteUrl()}/lobby`, tag: `session-${sessionIso}` });
-            await within(deadline, "push", () => doPush(s, payload, lead * 60, Math.min(PUSH_TIMEOUT_MS, deadline.remainingMs())), PUSH_TIMEOUT_MS);
+            await within(deadline, "push", () => { started = true; return doPush(s, payload, lead * 60, Math.min(PUSH_TIMEOUT_MS, deadline.remainingMs())); }, PUSH_TIMEOUT_MS);
             await finish(admin, claim.id, "sent", null);
             out.push.sent++;
           } catch (e) {
-            if (e instanceof DeadlineError) { await retryOrFail(admin, claim, "deadline reached during send; delivery uncertain"); out.push.failed++; continue; }   // started: counts, retried
+            if (e instanceof DeadlineError) {
+              if (!started) { if (await releaseSend(admin, claim)) out.push.released++; continue; }                 // never started: no attempt consumed
+              await retryOrFail(admin, claim, "deadline reached during send; delivery uncertain"); out.push.failed++; continue;   // started: counts, retried
+            }
             const status = (e as { statusCode?: number }).statusCode;
             if (status === 404 || status === 410) {
               await admin.from("push_subscriptions").update({ disabled_at: new Date().toISOString(), failures: 99 }).eq("id", s.id);
@@ -96,16 +100,18 @@ export async function sendDueReminders(nowMs = Date.now(), deadline: Deadline = 
         if (deadline.remainingMs() < MIN_SEND_MS) { out.deferred++; continue; }
         const claim = await claimSend(admin, p.account_id, sessionIso, "email", "email");
         if (!claim) continue;
+        let started = false;
         try {
           const { data: user } = await admin.auth.admin.getUserById(p.account_id);
           const to = user?.user?.email;
           if (!to) throw new Error("no email");
           const t = formatSessionTime(session, cfg.timezone, cfg.timezone);
           const unsub = `${env.siteUrl()}/api/reminders/unsubscribe?t=${unsubscribeToken(p.account_id)}`;
-          await within(deadline, "email", () => doEmail(to, "Common Ground: the conversation hour starts soon", `Today's session starts in ${lead} minutes (${t.range} ${t.tzName}).\n\nJoin at the start for the best chance of a match: ${env.siteUrl()}/lobby\n\nStop these emails: ${unsub}\nOr manage reminders under Profile → Reminders.`, { unsubscribeUrl: unsub, idempotencyKey: `reminder/${claim.id}`, timeoutMs: Math.min(EMAIL_TIMEOUT_MS, deadline.remainingMs()) }), EMAIL_TIMEOUT_MS);
+          await within(deadline, "email", () => { started = true; return doEmail(to, "Common Ground: the conversation hour starts soon", `Today's session starts in ${lead} minutes (${t.range} ${t.tzName}).\n\nJoin at the start for the best chance of a match: ${env.siteUrl()}/lobby\n\nStop these emails: ${unsub}\nOr manage reminders under Profile → Reminders.`, { unsubscribeUrl: unsub, idempotencyKey: `reminder/${claim.id}`, timeoutMs: Math.min(EMAIL_TIMEOUT_MS, deadline.remainingMs()) }); }, EMAIL_TIMEOUT_MS);
           await finish(admin, claim.id, "sent", null);
           out.email.sent++;
         } catch (e) {
+          if (e instanceof DeadlineError && !started) { if (await releaseSend(admin, claim)) out.email.released++; continue; }   // never started: no attempt consumed
           // a deadline after the send started is uncertain (Resend dedups on the idempotency key; SMTP may duplicate on retry)
           await retryOrFail(admin, claim, e instanceof DeadlineError ? "deadline reached during send; delivery uncertain" : (e as Error).message);
           out.email.failed++;
@@ -119,6 +125,13 @@ export async function sendDueReminders(nowMs = Date.now(), deadline: Deadline = 
 }
 
 type Claim = { id: string; attempts: number };
+
+// The provider call never started (the budget ran out on the device or address
+// lookup): hand the claim back as it was, conditional on it still being ours.
+async function releaseSend(admin: ReturnType<typeof supabaseAdmin>, claim: Claim) {
+  const { data } = await admin.rpc("release_reminder_send", { p_id: claim.id, p_attempts: claim.attempts });
+  return data === true;
+}
 
 // Insert-or-nothing claim; a failed earlier attempt (below the cap) can be
 // re-claimed, and so can a claim a dead worker left behind (older than STALE_CLAIM_MS).

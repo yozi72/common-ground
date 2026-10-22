@@ -39,3 +39,39 @@ export function appealOutcome(m: HeldMessage): AppealOutcome {
 export function canAcceptRevision(m: HeldMessage): boolean {
   return m.status === "revise" && !!m.suggested_revision && !m.undeliverable_reason;
 }
+
+// --- appeal form state (pure, tested) -----------------------------------------
+// Success is shown only after the server accepted the appeal; a failure keeps
+// the note and allows a retry; nothing can be submitted while a request is in
+// flight, so a double tap cannot file twice.
+export type AppealFormState = { phase: "idle" | "editing" | "sending" | "sent" | "error"; note: string; error: string | null };
+export type AppealFormEvent =
+  | { type: "open" } | { type: "close" } | { type: "note"; note: string }
+  | { type: "submit" } | { type: "accepted" } | { type: "failed"; error: string };
+export const appealFormInitial: AppealFormState = { phase: "idle", note: "", error: null };
+export function appealFormReducer(s: AppealFormState, e: AppealFormEvent): AppealFormState {
+  switch (e.type) {
+    case "open": return s.phase === "sending" || s.phase === "sent" ? s : { ...s, phase: "editing", error: null };
+    case "close": return s.phase === "sending" || s.phase === "sent" ? s : { ...s, phase: "idle", error: null };
+    case "note": return s.phase === "sending" || s.phase === "sent" ? s : { ...s, note: e.note };
+    case "submit": return s.phase === "editing" || s.phase === "error" ? { ...s, phase: "sending", error: null } : s;   // never from sending/sent
+    case "accepted": return s.phase === "sending" ? { ...s, phase: "sent", error: null } : s;
+    case "failed": return s.phase === "sending" ? { ...s, phase: "error", error: e.error } : s;              // note preserved
+  }
+}
+
+// Bounded refresh: held outcomes are re-fetched only while an appeal is open.
+export function heldNeedsRefresh(rows: HeldMessage[]): boolean {
+  return rows.some((m) => m.appeal_status === "open");
+}
+
+// --- pending-row polling (pure, tested) ----------------------------------------
+// Fast polling (1.5 s) is for messages the worker is actively checking. A
+// message deferred until the daily budget reset (next_attempt_at far ahead)
+// must not keep the screen polling for hours: it falls back to the regular
+// 5 s poll and realtime, and becomes "live" again when its retry time nears.
+export type PollRow = { status: string; next_attempt_at?: string | null };
+export const FAST_POLL_HORIZON_MS = 60_000;
+export function fastPollDue(rows: PollRow[], nowMs: number): boolean {
+  return rows.some((r) => r.status === "pending" && (!r.next_attempt_at || Date.parse(r.next_attempt_at) <= nowMs + FAST_POLL_HORIZON_MS));
+}

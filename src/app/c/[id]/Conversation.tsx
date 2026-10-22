@@ -4,8 +4,8 @@ import { useRouter } from "next/navigation";
 import { supabaseBrowser } from "@/lib/supabase/client";
 import { TwoCups } from "@/components/Illustrations";
 import { UNREAD_CHANGED } from "@/components/useUnread";
-import { HeldMessages } from "@/components/HeldMessages";
-import { undeliverableText } from "@/lib/held-messages";
+import { HeldMessages, HeldItem } from "@/components/HeldMessages";
+import { fastPollDue, type HeldMessage } from "@/lib/held-messages";
 import { readMarkFor, readMarkAfter, PAGE_SIZE } from "@/lib/chat-history";
 import { ChatSync, type SyncState } from "@/lib/chat-sync";
 import { latestMessages, olderMessages, newerMessages, existingIds, actionablePending } from "@/lib/chat-queries";
@@ -15,9 +15,7 @@ type Question = { id: string; seq: number; phase: "opening" | "mid"; question_te
 type Answer = { question_id: string; participant_id: string; choice_index: number | null; custom_text: string | null; status: string };
 type Msg = { id: string; sender_participant_id: string; kind: "chat" | "answer"; body: string; created_at: string };
 type ThreadState = { tier?: "chat" | "friend"; request_from_me?: boolean; request_for_me?: boolean; request_available?: boolean; status?: string; connection_id?: string };
-type Pending = { id: string; client_send_id: string; kind: "chat" | "answer"; question_id: string | null; body: string; status: string; user_explanation: string | null; suggested_revision: string | null; created_at: string; attempts: number; undeliverable_reason?: string | null };
-// A decided message (revise/blocked) can still be appealed after the conversation
-// ended or the history was cleared; it just cannot be sent any more.
+type Pending = { id: string; client_send_id: string; kind: "chat" | "answer"; question_id: string | null; body: string; status: string; user_explanation: string | null; suggested_revision: string | null; created_at: string; attempts: number; undeliverable_reason?: string | null; next_attempt_at?: string | null };
 
 const PENDING_CANCEL_AFTER_MS = 45_000;
 
@@ -43,6 +41,9 @@ export function Conversation({ conversationId, myParticipantId, myAlias, peerAli
   const [loadingMore, setLoadingMore] = useState(false);
   const lastReadSent = useRef<string | null>(null);
   const [pending, setPending] = useState<Pending[]>([]);
+  // decided messages (revise / blocked / cancelled after an appeal) with their persisted appeal state
+  const [held, setHeld] = useState<HeldMessage[]>([]);
+  const [heldKey, setHeldKey] = useState(0);
   const [partnerAway, setPartnerAway] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -56,13 +57,14 @@ export function Conversation({ conversationId, myParticipantId, myAlias, peerAli
 
   const load = useCallback(async () => {
     const sb = supabaseBrowser();
-    const [c, q, a, p, n, ts] = await Promise.all([
+    const [c, q, a, p, n, ts, h] = await Promise.all([
       sb.from("conversations").select("id, status, opening_question_count, questions_asked, end_reason, kind, history_cleared_at").eq("id", conversationId).maybeSingle(),
       sb.from("conversation_questions").select("id, seq, phase, question_text, choices, status, created_at, revealed_at").eq("conversation_id", conversationId).order("seq"),
       sb.from("question_answers").select("question_id, participant_id, choice_index, custom_text, status").eq("conversation_id", conversationId),
-      actionablePending(sb, conversationId),   // only records that still need me (cancel / revise / appeal)
+      actionablePending(sb, conversationId),   // records still being checked (cancel while waiting)
       sb.from("notifications").select("id").eq("kind", "partner_away").contains("payload", { conversation_id: conversationId }).limit(1),
       kind === "friend" ? sb.rpc("thread_state", { p_conversation: conversationId }) : Promise.resolve({ data: null, error: null }),
+      sb.rpc("my_held_messages", { p_conversation: conversationId }),   // decided rows + appeal state, mine only
     ]);
     if (c.data) setConv(c.data as Conv);
     if (ts.data) setThread(ts.data as ThreadState);
@@ -74,6 +76,7 @@ export function Conversation({ conversationId, myParticipantId, myAlias, peerAli
     await sync.refresh();
     const loaded = sync.current;
     if (!p.error) setPending(((p.data ?? []) as Pending[]).slice().reverse());
+    if (!h.error) setHeld((h.data ?? []) as HeldMessage[]);
     setPartnerAway(!!n.data?.length);
     if (c.data?.status === "ended" && c.data?.kind !== "friend") router.push(`/c/${conversationId}/reflect`);
     // Mark read only what was actually loaded and is on screen: a visible tab, a
@@ -129,13 +132,17 @@ export function Conversation({ conversationId, myParticipantId, myAlias, peerAli
     return () => { sb.removeChannel(ch); clearInterval(poll); clearInterval(hb); clearInterval(clock); clearTimeout(clock0); clearInterval(verify); document.removeEventListener("visibilitychange", onVisible); };
   }, [conversationId, load, verifyHistory, isFriend, sync]);
 
-  // Faster polling while something of mine is still being checked.
-  const hasLivePending = pending.some((p) => p.status === "pending");
+  // Faster polling only while something of mine is actively being checked. A
+  // message deferred until the daily budget reset is not "live": the regular
+  // 5 s poll and realtime cover it, and fast polling resumes near its retry time.
+  const hasLivePending = fastPollDue(pending, now);   // `now` ticks every second; before the first tick deferred rows simply count as not live
   useEffect(() => {
     if (!hasLivePending) return;
     const t = setInterval(load, 1500);
     return () => clearInterval(t);
   }, [hasLivePending, load]);
+  // held outcomes refresh with every load (so a reviewer's decision shows without a reload)
+  const onHeldChanged = useCallback(async () => { await load(); setHeldKey((k) => k + 1); }, [load]);
 
   const newestId = messages[messages.length - 1]?.id ?? null;
   useEffect(() => { bottomRef.current?.scrollIntoView({ block: "end" }); }, [newestId, questions.length]);
@@ -286,9 +293,11 @@ export function Conversation({ conversationId, myParticipantId, myAlias, peerAli
 
       {openQuestion && (
         <QuestionCard q={openQuestion} mine={myAnswerFor(openQuestion.id)} peerAlias={peerAlias} peerAnswered={!!peerAnswerFor(openQuestion.id)}
-          pendingAnswer={pending.find((p) => p.question_id === openQuestion.id && !["approved", "cancelled"].includes(p.status)) ?? null}
-          onChoice={(i) => api(`/api/questions/${openQuestion.id}`, { action: "choice", choice: i, conversation_id: conversationId }).then(load)}
-          onSkip={() => api(`/api/questions/${openQuestion.id}`, { action: "skip", conversation_id: conversationId }).then(load)}
+          pendingAnswer={pending.find((p) => p.question_id === openQuestion.id && ["pending", "review", "failed"].includes(p.status)) ?? null}
+          heldAnswer={held.find((m) => m.kind === "answer" && (m.status === "revise" || m.status === "blocked")) ?? null}
+          onHeldChanged={onHeldChanged}
+          onChoice={(i) => api(`/api/questions/${openQuestion.id}`, { action: "choice", choice: i }).then(load)}
+          onSkip={() => api(`/api/questions/${openQuestion.id}`, { action: "skip" }).then(load)}
           onCustom={(text) => api("/api/messages", { conversation_id: conversationId, client_send_id: crypto.randomUUID(), body: text, kind: "answer", question_id: openQuestion.id }).then(load)}
           onPendingAction={(id, action) => api(`/api/messages/${id}`, { action }).then(load)}
           now={now}
@@ -300,7 +309,7 @@ export function Conversation({ conversationId, myParticipantId, myAlias, peerAli
       )}
       {conv.status === "ended" && (
         // decided messages stay appealable after the chat ended or its history was cleared; outcomes are shown here too
-        <HeldMessages conversationId={conversationId} />
+        <HeldMessages conversationId={conversationId} initial={held} refreshKey={heldKey} />
       )}
       {isFriend && conv.status !== "ended" && !openQuestion && (
         <div className="flex justify-center">
@@ -308,7 +317,8 @@ export function Conversation({ conversationId, myParticipantId, myAlias, peerAli
         </div>
       )}
       {conv.status === "chatting" && (
-        <Composer conversationId={conversationId} pending={pending.filter((p) => p.kind === "chat" && !["approved", "cancelled"].includes(p.status))}
+        <Composer conversationId={conversationId} pending={pending.filter((p) => p.kind === "chat" && ["pending", "review", "failed"].includes(p.status))}
+          held={held.filter((m) => m.kind === "chat")} onHeldChanged={onHeldChanged}
           onSent={load} onPendingAction={(id, action, note) => api(`/api/messages/${id}`, { action, note }).then(load)} api={api} now={now} />
       )}
     </div>
@@ -368,8 +378,8 @@ function RevealedQuestion({ q, mine, theirs, myAlias, peerAlias }: { q: Question
   );
 }
 
-function QuestionCard({ q, mine, peerAlias, peerAnswered, pendingAnswer, onChoice, onSkip, onCustom, onPendingAction, now }: {
-  q: Question; mine?: Answer; peerAlias: string; peerAnswered: boolean; pendingAnswer: Pending | null;
+function QuestionCard({ q, mine, peerAlias, peerAnswered, pendingAnswer, heldAnswer, onHeldChanged, onChoice, onSkip, onCustom, onPendingAction, now }: {
+  q: Question; mine?: Answer; peerAlias: string; peerAnswered: boolean; pendingAnswer: Pending | null; heldAnswer: HeldMessage | null; onHeldChanged: () => Promise<void>;
   onChoice: (i: number) => void; onSkip: () => void; onCustom: (t: string) => void; onPendingAction: (id: string, action: "cancel" | "accept_revision" | "appeal") => void; now: number;
 }) {
   const [custom, setCustom] = useState("");
@@ -384,6 +394,8 @@ function QuestionCard({ q, mine, peerAlias, peerAnswered, pendingAnswer, onChoic
         <p className="notice notice-ok">Answered. {peerAnswered ? "Revealing…" : `Waiting for ${peerAlias}. You'll both see each other's answers at the same time.`}</p>
       ) : pendingAnswer ? (
         <PendingItem p={pendingAnswer} now={now} onAction={onPendingAction} />
+      ) : heldAnswer ? (
+        <ul className="space-y-2"><HeldItem m={heldAnswer} open onChanged={onHeldChanged} /></ul>
       ) : (
         <>
           <div className="grid gap-2">
@@ -406,21 +418,11 @@ function QuestionCard({ q, mine, peerAlias, peerAnswered, pendingAnswer, onChoic
   );
 }
 
+// A message still being checked (pending / held for a human / failed to check).
+// Decided messages (revise / blocked) use the shared HeldItem with persisted appeal state.
 function PendingItem({ p, now, onAction }: { p: Pending; now: number; onAction: (id: string, action: "cancel" | "accept_revision" | "appeal", note?: string) => void }) {
   const age = now - new Date(p.created_at).getTime();
   const slow = p.status === "pending" && age > PENDING_CANCEL_AFTER_MS;
-  const [appealing, setAppealing] = useState(false);
-  const [note, setNote] = useState("");
-  const [appealed, setAppealed] = useState(false);
-  const appealBox = appealed ? (
-    <p className="text-xs" role="status">Appeal sent. A reviewer will look at it; the message stays undelivered unless they overturn the decision.</p>
-  ) : appealing ? (
-    <form className="space-y-2" onSubmit={(e) => { e.preventDefault(); onAction(p.id, "appeal", note); setAppealed(true); setAppealing(false); }}>
-      <label className="block text-xs" htmlFor={`appeal-${p.id}`}>Tell the reviewer why this should be delivered (optional)</label>
-      <textarea id={`appeal-${p.id}`} className="field text-sm" rows={2} maxLength={1000} value={note} onChange={(e) => setNote(e.target.value)} />
-      <div className="flex gap-2"><button className="btn btn-primary text-xs px-3 py-1.5 min-h-0">Send appeal</button><button type="button" className="btn btn-ghost text-xs px-3 py-1.5 min-h-0" onClick={() => setAppealing(false)}>Back</button></div>
-    </form>
-  ) : null;
   return (
     <div className="rounded-xl px-3 py-2 text-sm space-y-2" style={{ background: "var(--mine)", opacity: p.status === "pending" ? 0.8 : 1 }} role="status">
       <div className="whitespace-pre-wrap break-words">{p.body}</div>
@@ -436,42 +438,13 @@ function PendingItem({ p, now, onAction }: { p: Pending; now: number; onAction: 
           <button className="btn btn-ghost text-xs px-2 py-1 min-h-0" onClick={() => onAction(p.id, "cancel")}>Withdraw</button>
         </div>
       )}
-      {p.status === "revise" && (
-        <div className="notice notice-warn space-y-2">
-          <p>Not delivered. {p.user_explanation}</p>
-          {p.undeliverable_reason && <p className="text-xs">{undeliverableText(p.undeliverable_reason)} You can still appeal the decision for the record.</p>}
-          {p.suggested_revision && !p.undeliverable_reason && (
-            <div className="rounded-lg p-2 text-sm" style={{ background: "var(--card)" }}>
-              <p className="text-xs muted mb-1">Suggested rewording (sent only if you accept):</p>
-              <p>{p.suggested_revision}</p>
-            </div>
-          )}
-          <div className="flex flex-wrap gap-2">
-            {p.suggested_revision && !p.undeliverable_reason && <button className="btn btn-primary text-xs px-3 py-1.5 min-h-0" onClick={() => onAction(p.id, "accept_revision")}>Send this version</button>}
-            <button className="btn btn-secondary text-xs px-3 py-1.5 min-h-0" onClick={() => onAction(p.id, "cancel")}>Discard</button>
-            {!appealed && <button className="btn btn-ghost text-xs px-3 py-1.5 min-h-0" onClick={() => setAppealing(true)}>Appeal</button>}
-          </div>
-          {appealBox}
-        </div>
-      )}
-      {p.status === "blocked" && (
-        <div className="notice notice-bad space-y-2">
-          <p>Not delivered. {p.user_explanation}</p>
-          {p.undeliverable_reason && <p className="text-xs">{undeliverableText(p.undeliverable_reason)} You can still appeal the decision for the record.</p>}
-          <div className="flex gap-2">
-            <button className="btn btn-secondary text-xs px-3 py-1.5 min-h-0" onClick={() => onAction(p.id, "cancel")}>Dismiss</button>
-            {!appealed && <button className="btn btn-ghost text-xs px-3 py-1.5 min-h-0" onClick={() => setAppealing(true)}>Appeal</button>}
-          </div>
-          {appealBox}
-        </div>
-      )}
       {p.status === "failed" && <div className="notice notice-bad">Couldn't be checked. <button className="underline" onClick={() => onAction(p.id, "cancel")}>Discard</button></div>}
     </div>
   );
 }
 
-function Composer({ conversationId, pending, onSent, onPendingAction, api, now }: {
-  conversationId: string; pending: Pending[]; onSent: () => void;
+function Composer({ conversationId, pending, held, onHeldChanged, onSent, onPendingAction, api, now }: {
+  conversationId: string; pending: Pending[]; held: HeldMessage[]; onHeldChanged: () => Promise<void>; onSent: () => void;
   onPendingAction: (id: string, action: "cancel" | "accept_revision" | "appeal", note?: string) => void;
   api: (url: string, body: unknown) => Promise<unknown>; now: number;
 }) {
@@ -491,6 +464,7 @@ function Composer({ conversationId, pending, onSent, onPendingAction, api, now }
   return (
     <div className="sticky bottom-[68px] sm:bottom-0 pb-2 space-y-2" style={{ background: "var(--bg)" }}>
       {pending.map((p) => <PendingItem key={p.id} p={p} now={now} onAction={onPendingAction} />)}
+      {held.length > 0 && <ul className="space-y-2">{held.map((m) => <HeldItem key={m.id} m={m} open onChanged={onHeldChanged} />)}</ul>}
       <form onSubmit={send} className="flex gap-2 items-end">
         <label className="sr-only" htmlFor="composer">Message</label>
         <textarea id="composer" className="field flex-1" rows={1} maxLength={2000} value={text} onChange={(e) => setText(e.target.value)}

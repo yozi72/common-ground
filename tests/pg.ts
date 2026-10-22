@@ -1,25 +1,36 @@
 // Direct Postgres access for tests that need DDL (temporary triggers) or
-// coordinated concurrent transactions (lock-order checks). LOCAL STACK ONLY:
-// the destination is validated before a client is constructed, independently
-// of the Supabase URL check in tests/setup.ts, because TEST_PG_URL (and the
-// libpq-style PGHOST / PGHOSTADDR overrides the driver honours) could point
-// elsewhere. Destructive helpers must never reach a hosted database.
+// coordinated concurrent transactions (lock-order checks). LOCAL STACK ONLY.
+// The destination is validated with the driver's own connection-string parser
+// (pg-connection-string), so every override the driver honours is covered:
+// the URL host, the `host` and `hostaddr` query parameters, and the libpq
+// environment variables PGHOST / PGHOSTADDR. Error messages name the host
+// only, never the credentials. Independent of the Supabase URL check in
+// tests/setup.ts. Destructive helpers must never reach a hosted database.
 import { Client } from "pg";
+import { parse } from "pg-connection-string";
 
 export const LOCAL_PG_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]", "::1"]);
 export const DEFAULT_PG_URL = "postgresql://postgres:postgres@127.0.0.1:54322/postgres";
 
-// Resolves the host the driver would actually connect to and refuses anything non-local.
+function nonLocal(host: string | null | undefined): string | null {
+  if (!host) return null;
+  // the driver accepts comma-separated host lists; every entry must be local
+  for (const h of String(host).split(",")) { const t = h.trim(); if (t && !LOCAL_PG_HOSTS.has(t)) return t; }
+  return null;
+}
+
+// Resolves the destination the driver would actually use and refuses anything non-local.
 export function assertLocalPgDestination(url: string | undefined, envObj: NodeJS.ProcessEnv = process.env): string {
   const raw = url ?? envObj.TEST_PG_URL ?? DEFAULT_PG_URL;
-  let host: string;
-  try { host = new URL(raw).hostname; } catch { throw new Error(`tests refuse the Postgres destination: not a URL (${raw})`); }
-  if (!LOCAL_PG_HOSTS.has(host)) throw new Error(`tests refuse the Postgres destination ${host}: local stack only`);
-  for (const k of ["PGHOST", "PGHOSTADDR"] as const) {
-    const v = envObj[k];
-    if (v && !LOCAL_PG_HOSTS.has(v)) throw new Error(`tests refuse the Postgres destination from ${k}=${v}: local stack only`);
-  }
+  let cfg: ReturnType<typeof parse>;
+  try { cfg = parse(raw); } catch { throw new Error("tests refuse the Postgres destination: the connection string could not be parsed"); }
   if (!envObj.VITEST && envObj.NODE_ENV !== "test") throw new Error("tests/pg.ts is for automated tests only");
+  const effectiveHost = cfg.host || envObj.PGHOST || "localhost";           // the driver's own precedence: string, then PGHOST, then localhost (an empty host is absent)
+  const effectiveAddr = (cfg.hostaddr ? String(cfg.hostaddr) : null) || envObj.PGHOSTADDR || null;
+  const badHost = nonLocal(effectiveHost);
+  if (badHost) throw new Error(`tests refuse the Postgres destination ${badHost}: local stack only`);
+  const badAddr = nonLocal(effectiveAddr);
+  if (badAddr) throw new Error(`tests refuse the Postgres destination hostaddr ${badAddr}: local stack only`);
   return raw;
 }
 

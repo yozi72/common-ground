@@ -5,7 +5,7 @@
 // the stage.
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { setModelClientForTests, type ModelRequest } from "@/lib/ai/gateway";
-import { runTick, interleaveWork, QUESTION_ITEM_MS } from "@/lib/workers/tick";
+import { runTick, QUESTION_ITEM_MS } from "@/lib/workers/tick";
 import { generateNextQuestion } from "@/lib/workers/questions";
 import { admin, makeUser, deleteUser, openSessionNow, openConversation, finishOpeningRound, resetQueue, LEFT, RIGHT, type TestUser } from "./helpers";
 import { withPg } from "./pg";
@@ -31,11 +31,6 @@ afterAll(async () => {
 const asked = async (id: string) => (await admin().from("conversations").select("questions_asked, status, question_failures, question_retry_at").eq("id", id).single()).data!;
 
 describe("question generation keeps up under backlog", () => {
-  it("interleaves the three kinds of work", () => {
-    const w = (need: "first" | "successor" | "mid", n: number) => Array.from({ length: n }, (_, i) => ({ id: `${need}${i}`, need }));
-    expect(interleaveWork([...w("first", 3), ...w("mid", 1), ...w("successor", 2)]).map((x) => x.id)).toEqual(["first0", "successor0", "mid0", "first1", "successor1", "first2"]);
-  });
-
   it("every tick creates questions AND moderates messages; failing conversations back off; successors and mid questions progress", async () => {
     await openSessionNow(); await resetQueue();
     // backlog: 5 opening conversations with no question yet

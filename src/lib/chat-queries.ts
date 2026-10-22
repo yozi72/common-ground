@@ -4,7 +4,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { PAGE_SIZE, olderFilter, newerFilter } from "@/lib/chat-history";
 
 export const MESSAGE_COLS = "id, sender_participant_id, kind, body, created_at";
-export const PENDING_COLS = "id, client_send_id, kind, question_id, body, status, user_explanation, suggested_revision, created_at, attempts, undeliverable_reason";
+export const PENDING_COLS = "id, client_send_id, kind, question_id, body, status, user_explanation, suggested_revision, created_at, attempts, undeliverable_reason, next_attempt_at";
 
 // Send records that still need the sender (cancel / revise / appeal). Completed
 // ones (approved, cancelled) are history and never need to be loaded here, so a

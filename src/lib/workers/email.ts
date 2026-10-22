@@ -78,16 +78,23 @@ export async function sendQueuedEmails(limit = 20, deadline: Deadline = Deadline
     // still mine, still relevant? (the invitation may have been declined or expired since the claim)
     const { data: state } = await admin.rpc("recheck_email_outbox", { p_id: row.id, p_claim_token: row.claim_token });
     if (state !== "claimed") { out.cancelled++; continue; }
+    let started = false;
     try {
       const { data: user } = await admin.auth.admin.getUserById(row.account_id);
       const to = user?.user?.email;
       if (!to) throw new PermanentEmailError("no email on account");
       const { subject, text } = tpl(env.siteUrl());
       // bounded by the provider timeout and what is left of the budget; the call starts only if time remains
-      const via = await within(deadline, "email", () => deliver({ id: row.id, to, subject, text, timeoutMs: Math.min(EMAIL_TIMEOUT_MS, deadline.remainingMs()) }), EMAIL_TIMEOUT_MS);
+      const via = await within(deadline, "email", () => { started = true; return deliver({ id: row.id, to, subject, text, timeoutMs: Math.min(EMAIL_TIMEOUT_MS, deadline.remainingMs()) }); }, EMAIL_TIMEOUT_MS);
       const r = await finish("sent", via);
       if (r === "sent") out.sent++; else out.cancelled++;
     } catch (e) {
+      if (e instanceof DeadlineError && !started) {
+        // the budget ran out on the address lookup: the send never started, the claim goes back untouched
+        const r = await admin.rpc("release_email_outbox", { p_id: row.id, p_claim_token: row.claim_token }).then((x) => (x.data as string | null) ?? "unknown");
+        if (r === "queued") out.released++; else out.cancelled++;
+        continue;
+      }
       const permanent = e instanceof PermanentEmailError;
       // a deadline after the send STARTED is an uncertain outcome (SMTP may still have delivered; Resend dedups on the
       // idempotency key): it counts as the attempt it was and goes back to the queue with backoff
