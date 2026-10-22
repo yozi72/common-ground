@@ -9,7 +9,7 @@ vi.mock("pg", () => ({
 const { assertLocalPgDestination, pgClient, DEFAULT_PG_URL } = await import("./pg");
 
 describe("direct Postgres access is local-only in automated tests", () => {
-  const testEnv = { VITEST: "1" } as NodeJS.ProcessEnv;
+  const testEnv = { VITEST: "1" } as unknown as NodeJS.ProcessEnv;
   it("accepts the local stack and refuses hosted hosts, PGHOST overrides, bad URLs and non-test processes", () => {
     expect(assertLocalPgDestination(undefined, testEnv)).toBe(DEFAULT_PG_URL);
     expect(assertLocalPgDestination("postgresql://postgres:x@localhost:54322/postgres", testEnv)).toContain("localhost");
@@ -18,7 +18,7 @@ describe("direct Postgres access is local-only in automated tests", () => {
     expect(() => assertLocalPgDestination(undefined, { ...testEnv, PGHOST: "db.example.com" })).toThrow(/PGHOST/);
     expect(() => assertLocalPgDestination(undefined, { ...testEnv, PGHOSTADDR: "203.0.113.9" })).toThrow(/PGHOSTADDR/);
     expect(() => assertLocalPgDestination("not a url", testEnv)).toThrow(/not a URL/);
-    expect(() => assertLocalPgDestination(undefined, {} as NodeJS.ProcessEnv)).toThrow(/automated tests only/);
+    expect(() => assertLocalPgDestination(undefined, {} as unknown as NodeJS.ProcessEnv)).toThrow(/automated tests only/);
   });
   it("pgClient refuses a remote URL without constructing or connecting a client", async () => {
     await expect(pgClient("postgresql://postgres:x@db.example.supabase.co:5432/postgres")).rejects.toThrow(/local stack only/);
