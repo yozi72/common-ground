@@ -32,9 +32,9 @@ Record of product and technical decisions for the Common Ground pilot, so the ne
 
 **Retention.** Approved messages purged 30 days after a conversation ends; pending/blocked after 7 days (held while an appeal is open); resolved match invitations and finished queue entries after 90 days; reports kept 365 days; reflections kept; account deletion propagates immediately through FK cascades.
 
-**Appeals outlive the conversation (2026-10-22).** A moderation decision (revise or blocked) can be appealed even after the conversation ended, was blocked, or the chat history was cleared; the message itself can no longer be sent, and an accepted appeal is recorded and explained to the sender without delivering anything. Undecided messages are cancelled when the conversation closes.
+**Appeals outlive the conversation (2026-10-22).** The sender finds their held messages and appeal outcomes on the reflection page of an ended live conversation and inside an ended or cleared chat; one appeal per message. A moderation decision (revise or blocked) can be appealed even after the conversation ended, was blocked, or the chat history was cleared; the message itself can no longer be sent, and an accepted appeal is recorded and explained to the sender without delivering anything. Undecided messages are cancelled when the conversation closes.
 
-**Usage limits (2026-10-22).** A global per-task daily limit and an optional per-account daily limit both apply; a shared question counts once globally and once for each participant; a rejected request reserves nothing; when a per-account limit is enabled, unattributed calls are refused.
+**Usage limits (2026-10-22).** When a limit is reached, a message stays undelivered and pending with an accurate explanation to the sender, is checked again automatically when the daily window resets, and is never escalated to human review or counted as a provider failure because of the cap. A global per-task daily limit and an optional per-account daily limit both apply; a shared question counts once globally and once for each participant; a rejected request reserves nothing; when a per-account limit is enabled, unattributed calls are refused.
 
 **Reviewers.** One admin account (`ADMIN_EMAIL`), promoted on first sign-in. Admin decisions use the same enforcement function as the worker and are logged as `provider = 'human'`.
 
