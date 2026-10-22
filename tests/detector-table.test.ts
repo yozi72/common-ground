@@ -55,6 +55,12 @@ const TABLE: Row[] = [
   ["call me old-fashioned", false],
   ["Call me when you can", false],
   ["call me dave", false],                    // lowercase after a medium lead-in: not caught (documented limit)
+  ["CALL ME STUPID", false],                  // shouted insult after "call me": venting, not an introduction
+  ["call me stupid", false],
+  ["Call me Stupid, but", false],
+  ["CALL ME CRAZY", false],
+  ["call me a cynic", false],
+  ["CALL ME DAVE", true],                     // ALL CAPS after "call me" still counts when the word is not an ordinary one
   // weak lead-ins: Capitalized names count
   ["I'm Mike", true],
   ["I’m Mike, by the way", true],
@@ -99,7 +105,12 @@ const TABLE: Row[] = [
   ["I'm Canadian, from Toronto", false],
   // "this is"
   ["This is Robert, nice to meet you", true],
+  ["This is Robert Smith, nice to meet you", true],   // first + last name before the stop
+  ["This is Robert Smith.", true],
+  ["this is Priya Natarajan here", true],
   ["This is Robert.", true],
+  ["This is Really Hard.", false],                    // ordinary word, even followed by a Capitalized word
+  ["This is New York for you", false],
   ["This is Texas for you", false],
   ["This is America", false],
   ["THIS IS ROBERT.", false],                 // ALL CAPS after a weak lead-in: not caught (documented limit)
@@ -129,5 +140,5 @@ describe("identity detector phrase table", () => {
       if (employer !== undefined) expect(hits.includes("employer_location"), phrase).toBe(employer);
     });
   }
-  it("covers at least 90 phrases", () => { expect(TABLE.length).toBeGreaterThanOrEqual(90); });
+  it("covers at least 100 phrases", () => { expect(TABLE.length).toBeGreaterThanOrEqual(100); });
 });

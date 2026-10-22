@@ -17,7 +17,8 @@ export class GatewayError extends Error {
   // retryable: transient (network, 5xx, bad JSON) → keep pending and retry.
   // refusal: the model's safety layer declined to assess → hold for a human instead of retrying.
   // outOfTime: the caller's deadline left no room for a call → the claim should be released, not retried as a failure.
-  constructor(message: string, public readonly retryable = true, public readonly refusal = false, public readonly outOfTime = false) { super(message); }
+  // budgetExhausted: a deliberate usage limit refused the call → wait for the reset; not a provider failure, no attempt consumed.
+  constructor(message: string, public readonly retryable = true, public readonly refusal = false, public readonly outOfTime = false, public readonly budgetExhausted = false) { super(message); }
 }
 
 // deadlineMs: wall-clock budget left for this call, including retries.
@@ -253,7 +254,7 @@ async function callAnthropic(system: string, user: string, maxTokens: number, mo
   const accounts = (opts.accounts ?? []).filter(Boolean);
   const { data: allowed, error: budgetErr } = await supabaseAdmin().rpc("take_model_budget", { p_task: task, p_accounts: accounts.length ? accounts : null });
   if (budgetErr) throw new GatewayError(`model budget check failed: ${budgetErr.message}`, true);
-  if (allowed === false) throw new GatewayError(`model usage limit reached for ${task} today`, true);
+  if (allowed === false) throw new GatewayError(`model usage limit reached for ${task} today`, true, false, false, true);
   const client = modelClient ?? sdkClient;
   try {
     const res = await client({ system, user, maxTokens, model, timeout: budget.timeout, maxRetries: budget.maxRetries });

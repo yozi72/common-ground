@@ -6,6 +6,10 @@ import { runMatchingObserved } from "@/lib/workers/matching";
 
 const Body = z.object({ action: z.enum(["join", "leave"]), notify_email: z.boolean().optional() });
 
+// The opportunistic worker tick runs in after() with its own 25 s budget; the
+// function limit is explicit so the hosting default never decides it.
+export const maxDuration = 60;
+
 export async function POST(req: Request) {
   return handle(async () => {
     const { supabase } = await requireUser();

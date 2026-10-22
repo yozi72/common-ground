@@ -4,6 +4,8 @@ import { useRouter } from "next/navigation";
 import { supabaseBrowser } from "@/lib/supabase/client";
 import { TwoCups } from "@/components/Illustrations";
 import { UNREAD_CHANGED } from "@/components/useUnread";
+import { HeldMessages } from "@/components/HeldMessages";
+import { undeliverableText } from "@/lib/held-messages";
 import { readMarkFor, readMarkAfter, PAGE_SIZE } from "@/lib/chat-history";
 import { ChatSync, type SyncState } from "@/lib/chat-sync";
 import { latestMessages, olderMessages, newerMessages, existingIds, actionablePending } from "@/lib/chat-queries";
@@ -16,9 +18,6 @@ type ThreadState = { tier?: "chat" | "friend"; request_from_me?: boolean; reques
 type Pending = { id: string; client_send_id: string; kind: "chat" | "answer"; question_id: string | null; body: string; status: string; user_explanation: string | null; suggested_revision: string | null; created_at: string; attempts: number; undeliverable_reason?: string | null };
 // A decided message (revise/blocked) can still be appealed after the conversation
 // ended or the history was cleared; it just cannot be sent any more.
-function undeliverableText(reason: string) {
-  return reason === "cleared" ? "This chat's history was cleared, so this can't be sent now." : reason === "unfriended" ? "This chat has ended, so this can't be sent now." : reason === "blocked" ? "This conversation was ended with a block, so this can't be sent now." : "This conversation has ended, so this can't be sent now.";
-}
 
 const PENDING_CANCEL_AFTER_MS = 45_000;
 
@@ -299,13 +298,9 @@ export function Conversation({ conversationId, myParticipantId, myAlias, peerAli
       {isFriend && conv.status === "ended" && (
         <p className="notice notice-warn text-sm" role="status">{conv.end_reason === "blocked" ? "This conversation was ended with a block." : "This chat has ended. No new messages can be sent; what's here stays readable for 30 days."}</p>
       )}
-      {conv.status === "ended" && pending.some((p) => ["revise", "blocked"].includes(p.status)) && (
-        // decided messages stay appealable after the chat ended; nothing can be sent any more
-        <section className="space-y-2" aria-label="Your held messages">
-          {pending.filter((p) => ["revise", "blocked"].includes(p.status)).map((p) => (
-            <PendingItem key={p.id} p={p} now={now} onAction={(id, action, note) => api(`/api/messages/${id}`, { action, note }).then(load)} />
-          ))}
-        </section>
+      {conv.status === "ended" && (
+        // decided messages stay appealable after the chat ended or its history was cleared; outcomes are shown here too
+        <HeldMessages conversationId={conversationId} />
       )}
       {isFriend && conv.status !== "ended" && !openQuestion && (
         <div className="flex justify-center">
@@ -431,8 +426,8 @@ function PendingItem({ p, now, onAction }: { p: Pending; now: number; onAction: 
       <div className="whitespace-pre-wrap break-words">{p.body}</div>
       {p.status === "pending" && (
         <div className="flex items-center justify-between gap-2 muted text-xs">
-          <span>{slow ? "Still checking. The review service is slow right now; you can keep waiting or cancel." : "Checking before delivery…"}</span>
-          {slow && <button className="btn btn-ghost text-xs px-2 py-1 min-h-0" onClick={() => onAction(p.id, "cancel")}>Cancel</button>}
+          <span>{p.user_explanation ?? (slow ? "Still checking. The review service is slow right now; you can keep waiting or cancel." : "Checking before delivery…")}</span>
+          {(slow || p.user_explanation) && <button className="btn btn-ghost text-xs px-2 py-1 min-h-0" onClick={() => onAction(p.id, "cancel")}>Cancel</button>}
         </div>
       )}
       {p.status === "review" && (

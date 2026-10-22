@@ -12,7 +12,7 @@ import { getScheduleConfig } from "@/lib/schedule-config";
 import { sessionDueForReminder, formatSessionTime, partsWeekday } from "@/lib/schedule";
 import { unsubscribeToken } from "@/lib/unsubscribe";
 import { isAllowedPushEndpoint } from "@/lib/push-endpoint";
-import { Deadline, within } from "./deadline";
+import { Deadline, within, DeadlineError } from "./deadline";
 
 const MAX_ATTEMPTS = 3;
 const PUSH_TIMEOUT_MS = 10_000;
@@ -21,8 +21,8 @@ const MIN_SEND_MS = 3_000;             // don't claim a send that cannot even st
 const STALE_CLAIM_MS = 3 * 60_000;     // a claim this old belongs to a worker that died
 
 export type ReminderDeps = {
-  sendPush?: (sub: { endpoint: string; p256dh: string; auth: string }, payload: string, ttlSeconds: number) => Promise<void>;
-  sendEmail?: (to: string, subject: string, text: string, opts: { unsubscribeUrl: string; idempotencyKey: string }) => Promise<void>;
+  sendPush?: (sub: { endpoint: string; p256dh: string; auth: string }, payload: string, ttlSeconds: number, timeoutMs?: number) => Promise<void>;
+  sendEmail?: (to: string, subject: string, text: string, opts: { unsubscribeUrl: string; idempotencyKey: string; timeoutMs?: number }) => Promise<void>;
   pushConfigured?: boolean;
   emailConfigured?: boolean;
 };
@@ -34,7 +34,7 @@ export async function sendDueReminders(nowMs = Date.now(), deadline: Deadline = 
   const out = { session: null as string | null, push: { sent: 0, failed: 0, skipped: 0, disabled: 0 }, email: { sent: 0, failed: 0, skipped: 0 }, deferred: 0 };
   const pushOn = deps.pushConfigured ?? env.pushConfigured();
   const emailOn = deps.emailConfigured ?? env.emailConfigured();
-  const doPush = deps.sendPush ?? ((sub, payload, ttl) => { env.assertLiveDelivery("push"); return webpush.sendNotification({ endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } }, payload, { TTL: ttl, urgency: "high", timeout: PUSH_TIMEOUT_MS }).then(() => undefined); });
+  const doPush = deps.sendPush ?? ((sub, payload, ttl, timeoutMs) => { env.assertLiveDelivery("push"); return webpush.sendNotification({ endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } }, payload, { TTL: ttl, urgency: "high", timeout: Math.max(1_000, Math.min(PUSH_TIMEOUT_MS, timeoutMs ?? PUSH_TIMEOUT_MS)) }).then(() => undefined); });
   const doEmail = deps.sendEmail ?? sendEmail;
 
   // Only one lead time is supported per run per pref row; group by minutes_before.
@@ -74,10 +74,11 @@ export async function sendDueReminders(nowMs = Date.now(), deadline: Deadline = 
           }
           try {
             const payload = JSON.stringify({ title: "Common Ground", body: `Tonight's conversation hour starts in ${lead} minutes.`, url: `${env.siteUrl()}/lobby`, tag: `session-${sessionIso}` });
-            await within(deadline, "push", () => doPush(s, payload, lead * 60), PUSH_TIMEOUT_MS);
+            await within(deadline, "push", () => doPush(s, payload, lead * 60, Math.min(PUSH_TIMEOUT_MS, deadline.remainingMs())), PUSH_TIMEOUT_MS);
             await finish(admin, claim.id, "sent", null);
             out.push.sent++;
           } catch (e) {
+            if (e instanceof DeadlineError) { await retryOrFail(admin, claim, "deadline reached during send; delivery uncertain"); out.push.failed++; continue; }   // started: counts, retried
             const status = (e as { statusCode?: number }).statusCode;
             if (status === 404 || status === 410) {
               await admin.from("push_subscriptions").update({ disabled_at: new Date().toISOString(), failures: 99 }).eq("id", s.id);
@@ -101,11 +102,12 @@ export async function sendDueReminders(nowMs = Date.now(), deadline: Deadline = 
           if (!to) throw new Error("no email");
           const t = formatSessionTime(session, cfg.timezone, cfg.timezone);
           const unsub = `${env.siteUrl()}/api/reminders/unsubscribe?t=${unsubscribeToken(p.account_id)}`;
-          await within(deadline, "email", () => doEmail(to, "Common Ground: the conversation hour starts soon", `Today's session starts in ${lead} minutes (${t.range} ${t.tzName}).\n\nJoin at the start for the best chance of a match: ${env.siteUrl()}/lobby\n\nStop these emails: ${unsub}\nOr manage reminders under Profile → Reminders.`, { unsubscribeUrl: unsub, idempotencyKey: `reminder/${claim.id}` }), EMAIL_TIMEOUT_MS);
+          await within(deadline, "email", () => doEmail(to, "Common Ground: the conversation hour starts soon", `Today's session starts in ${lead} minutes (${t.range} ${t.tzName}).\n\nJoin at the start for the best chance of a match: ${env.siteUrl()}/lobby\n\nStop these emails: ${unsub}\nOr manage reminders under Profile → Reminders.`, { unsubscribeUrl: unsub, idempotencyKey: `reminder/${claim.id}`, timeoutMs: Math.min(EMAIL_TIMEOUT_MS, deadline.remainingMs()) }), EMAIL_TIMEOUT_MS);
           await finish(admin, claim.id, "sent", null);
           out.email.sent++;
         } catch (e) {
-          await retryOrFail(admin, claim, (e as Error).message);
+          // a deadline after the send started is uncertain (Resend dedups on the idempotency key; SMTP may duplicate on retry)
+          await retryOrFail(admin, claim, e instanceof DeadlineError ? "deadline reached during send; delivery uncertain" : (e as Error).message);
           out.email.failed++;
         }
       } else if (p.email_enabled) {
@@ -147,17 +149,18 @@ async function retryOrFail(admin: ReturnType<typeof supabaseAdmin>, claim: Claim
 // RFC 8058 one-click unsubscribe headers (mail providers POST "List-Unsubscribe=One-Click"
 // to the URL; a plain GET of the same URL only shows a confirmation page). Resend sends
 // carry an Idempotency-Key so a retried call can't double-deliver.
-async function sendEmail(to: string, subject: string, text: string, opts: { unsubscribeUrl: string; idempotencyKey: string }) {
+async function sendEmail(to: string, subject: string, text: string, opts: { unsubscribeUrl: string; idempotencyKey: string; timeoutMs?: number }) {
   env.assertLiveDelivery("email"); // hard stop before any provider, whatever the env holds
+  const t = Math.max(1_000, Math.min(EMAIL_TIMEOUT_MS, opts.timeoutMs ?? EMAIL_TIMEOUT_MS));   // transport timeout bounded by the remaining budget
   const headers = { "List-Unsubscribe": `<${opts.unsubscribeUrl}>`, "List-Unsubscribe-Post": "List-Unsubscribe=One-Click" };
   const key = env.resendApiKey();
   if (key) {
-    const res = await fetch("https://api.resend.com/emails", { method: "POST", headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json", "Idempotency-Key": opts.idempotencyKey }, body: JSON.stringify({ from: env.emailFrom(), to, subject, text, headers }), signal: AbortSignal.timeout(15_000) });
+    const res = await fetch("https://api.resend.com/emails", { method: "POST", headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json", "Idempotency-Key": opts.idempotencyKey }, body: JSON.stringify({ from: env.emailFrom(), to, subject, text, headers }), signal: AbortSignal.timeout(t) });
     if (!res.ok) throw new Error(`resend ${res.status}`);
     return;
   }
   const smtp = env.smtp();
   if (!smtp) throw new Error("no sender");
-  const transport = nodemailer.createTransport({ host: smtp.host, port: smtp.port, secure: smtp.port === 465, auth: { user: smtp.user, pass: smtp.pass }, connectionTimeout: 10_000, socketTimeout: 15_000 });
+  const transport = nodemailer.createTransport({ host: smtp.host, port: smtp.port, secure: smtp.port === 465, auth: { user: smtp.user, pass: smtp.pass }, connectionTimeout: Math.min(10_000, t), socketTimeout: t });
   await transport.sendMail({ from: `"${smtp.senderName}" <${smtp.user}>`, to, subject, text, headers });
 }

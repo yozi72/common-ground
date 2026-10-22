@@ -40,9 +40,9 @@ export type ModerationDeps = { moderate?: typeof moderate };   // injectable for
 
 // Drains everything that is due, in small claims, until the deadline leaves no
 // room for another message. `limit` caps one claim; the deadline bounds the run.
-export async function processPendingBatch(limit = 10, deadline: Deadline = Deadline.none(), deps: ModerationDeps = {}): Promise<{ processed: number; deferred: number; released: number }> {
+export async function processPendingBatch(limit = 10, deadline: Deadline = Deadline.none(), deps: ModerationDeps = {}): Promise<{ processed: number; deferred: number; released: number; budgetDeferred: number }> {
   const admin = supabaseAdmin();
-  const out = { processed: 0, deferred: 0, released: 0 };
+  const out = { processed: 0, deferred: 0, released: 0, budgetDeferred: 0 };
   while (deadline.remainingMs() > MIN_START_MS) {
     // never claim more than can plausibly start before the deadline
     const n = Math.min(BATCH, limit, Math.max(1, Math.floor(deadline.remainingMs() / TYPICAL_MESSAGE_MS)));
@@ -57,7 +57,7 @@ export async function processPendingBatch(limit = 10, deadline: Deadline = Deadl
         return out;
       }
       const r = await processOne(rows[i], deadline, deps);
-      if (r === "ok") out.processed++; else if (r === "released") out.released++; else out.deferred++;
+      if (r === "ok") out.processed++; else if (r === "released") out.released++; else if (r === "budget") out.budgetDeferred++; else out.deferred++;
     }
     if (rows.length < n) break;
   }
@@ -73,7 +73,7 @@ export async function processPendingById(id: string, deadline: Deadline = Deadli
   await processOne(row, deadline, deps);
 }
 
-async function processOne(row: PendingRow, deadline: Deadline, deps: ModerationDeps): Promise<"ok" | "deferred" | "released"> {
+async function processOne(row: PendingRow, deadline: Deadline, deps: ModerationDeps): Promise<"ok" | "deferred" | "released" | "budget"> {
   const admin = supabaseAdmin();
   const mod = deps.moderate ?? moderate;
   try {
@@ -134,6 +134,13 @@ async function processOne(row: PendingRow, deadline: Deadline, deps: ModerationD
       // our deadline, not the provider's fault: hand the claim back without consuming the attempt
       await admin.rpc("release_pending_claim", { p_id: row.id, p_claim_token: row.claim_token });
       return "released";
+    }
+    if (e instanceof GatewayError && e.budgetExhausted) {
+      // a usage cap, not an outage: keep the message, give the attempt back, explain the wait, and
+      // make it claimable again only when the daily usage window resets (no rapid re-claims)
+      const { data: resetAt } = await admin.rpc("model_budget_reset_at");
+      await admin.rpc("defer_pending_until", { p_pending: row.id, p_until: (resetAt as string | null) ?? new Date(Date.now() + 3600_000).toISOString(), p_error: msg, p_claim_token: row.claim_token });
+      return "budget";
     }
     if (e instanceof GatewayError && e.refusal) {
       // The model would not assess this content at all. Retrying won't change that: hold it for a person.

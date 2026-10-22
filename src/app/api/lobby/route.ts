@@ -14,6 +14,10 @@ const Body = z.discriminatedUnion("action", [
   z.object({ action: z.literal("broaden"), level: z.enum(["strict", "relaxed", "any"]) }),
 ]);
 
+// The opportunistic worker tick runs in after() with its own 25 s budget; the
+// function limit is explicit so the hosting default never decides it.
+export const maxDuration = 60;
+
 export async function POST(req: Request) {
   return handle(async () => {
     const { supabase } = await requireUser();

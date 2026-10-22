@@ -16,12 +16,14 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { env, LiveDeliveryBlockedError } from "@/lib/env";
 import { Deadline, within, DeadlineError } from "./deadline";
 
-export type EmailDeliverer = (args: { id: string; to: string; subject: string; text: string }) => Promise<string>;
+export type EmailDeliverer = (args: { id: string; to: string; subject: string; text: string; timeoutMs?: number }) => Promise<string>;
 
 export class PermanentEmailError extends Error {}
 const EMAIL_TIMEOUT_MS = 15_000;
+const EMAIL_MIN_MS = 5_000;        // smallest budget worth starting one send (typical send 1–3 s; provider timeout 15 s)
 
-async function deliverDefault({ id, to, subject, text }: { id: string; to: string; subject: string; text: string }): Promise<string> {
+async function deliverDefault({ id, to, subject, text, timeoutMs }: { id: string; to: string; subject: string; text: string; timeoutMs?: number }): Promise<string> {
+  const t = Math.max(1_000, Math.min(EMAIL_TIMEOUT_MS, timeoutMs ?? EMAIL_TIMEOUT_MS));   // transport timeout bounded by the remaining budget
   if (!env.liveDeliveryAllowed()) throw new PermanentEmailError(new LiveDeliveryBlockedError("email").message); // hard stop, no retry
   const key = env.resendApiKey();
   if (key) {
@@ -29,7 +31,7 @@ async function deliverDefault({ id, to, subject, text }: { id: string; to: strin
       method: "POST",
       headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json", "Idempotency-Key": `outbox/${id}` },
       body: JSON.stringify({ from: env.emailFrom(), to, subject, text }),
-      signal: AbortSignal.timeout(15_000),
+      signal: AbortSignal.timeout(t),
     });
     if (res.status >= 400 && res.status < 500 && res.status !== 429) throw new PermanentEmailError(`resend ${res.status}`);
     if (!res.ok) throw new Error(`resend ${res.status}`);
@@ -37,7 +39,7 @@ async function deliverDefault({ id, to, subject, text }: { id: string; to: strin
   }
   const smtp = env.smtp();
   if (smtp) {
-    const transport = nodemailer.createTransport({ host: smtp.host, port: smtp.port, secure: smtp.port === 465, auth: { user: smtp.user, pass: smtp.pass }, connectionTimeout: 10_000, socketTimeout: 15_000 });
+    const transport = nodemailer.createTransport({ host: smtp.host, port: smtp.port, secure: smtp.port === 465, auth: { user: smtp.user, pass: smtp.pass }, connectionTimeout: Math.min(10_000, t), socketTimeout: t });
     await transport.sendMail({ from: `"${smtp.senderName}" <${smtp.user}>`, to, subject, text });
     return "smtp";
   }
@@ -53,15 +55,23 @@ const TEMPLATES: Record<string, (siteUrl: string) => { subject: string; text: st
 
 export async function sendQueuedEmails(limit = 20, deadline: Deadline = Deadline.none(), deps: { deliver?: EmailDeliverer; configured?: boolean } = {}) {
   const admin = supabaseAdmin();
-  const out = { sent: 0, retried: 0, failed: 0, skipped: 0, cancelled: 0 };
+  const out = { sent: 0, retried: 0, failed: 0, skipped: 0, cancelled: 0, released: 0 };
   const configured = deps.configured ?? env.emailConfigured();
   const deliver = deps.deliver ?? deliverDefault;
-  const { data: rows, error } = await admin.rpc("claim_email_outbox", { p_limit: limit });
+  // claim only what can plausibly start before the deadline
+  if (deadline.remainingMs() < EMAIL_MIN_MS) return out;
+  const n = Math.max(1, Math.min(limit, Math.floor(deadline.remainingMs() / EMAIL_MIN_MS)));
+  const { data: rows, error } = await admin.rpc("claim_email_outbox", { p_limit: n });
   if (error) throw new Error(`claim_email_outbox: ${error.message}`);
   for (const row of (rows ?? []) as { id: string; account_id: string; template: string; claim_token: string }[]) {
     const finish = (outcome: "sent" | "retry" | "failed" | "skipped", err?: string) =>
       admin.rpc("finish_email_outbox", { p_id: row.id, p_claim_token: row.claim_token, p_outcome: outcome, p_error: err ?? null }).then((r) => (r.data as string | null) ?? "unknown");
-    if (deadline.remainingMs() < 20_000) { await finish("retry", "deadline"); out.retried++; continue; } // back to the queue, lease released
+    // out of time before this row's send started: hand the claim back as it was (attempt not consumed, no backoff)
+    if (deadline.remainingMs() < EMAIL_MIN_MS) {
+      const r = await admin.rpc("release_email_outbox", { p_id: row.id, p_claim_token: row.claim_token }).then((x) => (x.data as string | null) ?? "unknown");
+      if (r === "queued") out.released++; else out.cancelled++;
+      continue;
+    }
     const tpl = TEMPLATES[row.template];
     if (!tpl) { await finish("failed", "unknown template"); out.failed++; continue; }
     if (!configured) { await finish("skipped", "no email sender configured (RESEND_API_KEY or SMTP_*)"); out.skipped++; continue; }
@@ -74,13 +84,14 @@ export async function sendQueuedEmails(limit = 20, deadline: Deadline = Deadline
       if (!to) throw new PermanentEmailError("no email on account");
       const { subject, text } = tpl(env.siteUrl());
       // bounded by the provider timeout and what is left of the budget; the call starts only if time remains
-      const via = await within(deadline, "email", () => deliver({ id: row.id, to, subject, text }), EMAIL_TIMEOUT_MS);
+      const via = await within(deadline, "email", () => deliver({ id: row.id, to, subject, text, timeoutMs: Math.min(EMAIL_TIMEOUT_MS, deadline.remainingMs()) }), EMAIL_TIMEOUT_MS);
       const r = await finish("sent", via);
       if (r === "sent") out.sent++; else out.cancelled++;
     } catch (e) {
       const permanent = e instanceof PermanentEmailError;
-      // a deadline is ours, not the provider's: back to the queue (SMTP may still have delivered; see the duplicate window above)
-      const r = await finish(permanent ? "failed" : "retry", e instanceof DeadlineError ? "deadline" : (e as Error).message);
+      // a deadline after the send STARTED is an uncertain outcome (SMTP may still have delivered; Resend dedups on the
+      // idempotency key): it counts as the attempt it was and goes back to the queue with backoff
+      const r = await finish(permanent ? "failed" : "retry", e instanceof DeadlineError ? "deadline reached during send; delivery uncertain" : (e as Error).message);
       if (r === "queued") out.retried++; else if (r === "failed") out.failed++; else out.cancelled++;
     }
   }

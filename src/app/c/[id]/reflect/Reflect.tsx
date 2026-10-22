@@ -3,15 +3,18 @@ import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Sprout, Bridge } from "@/components/Illustrations";
+import { HeldMessages } from "@/components/HeldMessages";
+import type { HeldMessage } from "@/lib/held-messages";
 
 type Reflection = { felt_understood: number | null; recognized_shared: number | null; would_repeat: boolean | null; free_text: string | null };
 
 // The keep-talking decision comes first: it is the one thing that is lost if
 // someone leaves early. The reflection questions follow and are optional.
-export function Reflect({ conversationId, peerAlias, endReason, questionsAsked, initialReflection, initialDecision, friendshipEnabled, initialConnection = null }: {
+export function Reflect({ conversationId, peerAlias, endReason, questionsAsked, initialReflection, initialDecision, friendshipEnabled, initialConnection = null, initialHeld = null }: {
   conversationId: string; peerAlias: string; endReason: string | null; questionsAsked: number;
   initialReflection: Reflection | null; initialDecision: boolean | null; friendshipEnabled: boolean;
   initialConnection?: { connectionId: string; threadId: string | null; fromThisConversation?: boolean } | null;
+  initialHeld?: HeldMessage[] | null;
 }) {
   const router = useRouter();
   const [understood, setUnderstood] = useState(initialReflection?.felt_understood ?? 0);
@@ -125,6 +128,9 @@ export function Reflect({ conversationId, peerAlias, endReason, questionsAsked, 
         <button className="btn btn-primary" onClick={saveReflection}>{saved ? "Update" : "Save"}</button>
         {saved && <span className="muted text-sm ml-3" role="status">Saved.</span>}
       </section>
+
+      {/* held messages of mine from this conversation stay appealable after it ended; outcomes show here */}
+      <HeldMessages conversationId={conversationId} initial={initialHeld} />
 
       <Link href="/lobby" className="btn btn-secondary w-full">Back to Talk</Link>
     </div>

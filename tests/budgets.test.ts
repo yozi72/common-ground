@@ -82,11 +82,15 @@ describe("per-account model budgets through the gateway and workers", () => {
     const { data: p2, error: e2 } = await a.client.rpc("submit_message", { p_conversation: conv, p_client_send_id: "bg-3", p_body: "second from the same sender", p_kind: "answer", p_question: qid2 });
     expect(e2).toBeNull();
     const r2 = await processPendingBatch();
-    expect(r2.deferred).toBe(1);
+    expect(r2.budgetDeferred).toBe(1);                            // its own outcome, not a provider failure
+    expect(r2.deferred).toBe(0);
     expect(calls).toHaveLength(2);                                // no provider call for the rejected request
-    const held = (await admin().from("pending_messages").select("status, last_error, attempts").eq("id", p2!).single()).data!;
+    const held = (await admin().from("pending_messages").select("status, last_error, attempts, user_explanation, next_attempt_at").eq("id", p2!).single()).data!;
     expect(held.status).toBe("pending");
     expect(held.last_error).toMatch(/usage limit/);
+    expect(held.attempts).toBe(0);                                // the claim's attempt was given back
+    expect(held.user_explanation).toMatch(/daily limit/);
+    expect(Date.parse(held.next_attempt_at)).toBeGreaterThan(Date.now() + 50_000);   // waits for the reset, not a quick retry
     expect(await usage(a.id, "moderation")).toBe(1);              // the rejection did not count as usage
     // another sender still passes
     const { data: p3 } = await b.client.rpc("submit_message", { p_conversation: conv, p_client_send_id: "bg-4", p_body: "from b", p_kind: "answer", p_question: qid2 });

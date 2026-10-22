@@ -52,8 +52,11 @@ const STRONG_NAME = /\b(?:my (?:real |full |last |first |middle )?name(?:'s| is|
 const MEDIUM_NAME = /\b(?:you can call me|call me)\s+([^\s,.!?;:]+)/gi;
 const WEAK_NAME = /\b(?:i'm|i am|it's)\s+([^\s,.!?;:]+)/gi;
 // "This is X" introduces a person only when X stands alone: "This is Robert," / "This is Robert." / "This is Robert here"
-const THIS_IS_NAME = /\bthis is\s+([^\s,.!?;:]+)(?=\s*(?:[,.!]|$|\s+(?:here|speaking|btw)\b))/gi;
-const NOT_NAMES_EXPLICIT = new Set(["later","maybe","secret","private","anonymous","anything","whatever","nothing","none","nobody","classified","irrelevant","unimportant","mine","yours","back","soon","tomorrow","tonight","today","now","never","sometime","anytime","again","crazy","old","old-fashioned","young","sir","madam","boss","chief","captain","doctor","dr","mr","mrs","ms","miss","mom","dad","mum","buddy","dude","man","girl","boy","friend","honey","dear","love","babe","baby","kid","kiddo","pal","mate","bro","sis","whenever","if","when","at","on","in","by","after","before","about","directly","please","asap","the","a","an","not","no","yes","what","who","that","this","it","really","just","only","very","so","too","also","still","already","long","short","first","last","same","different","confidential","unknown","hidden","withheld","redacted","omitted","something","someone","hard","easy","common","unusual","weird","funny","boring","beautiful","ugly","up","out","me","you","him","her","them","us","sometimes","usually","mud","legion","nobody's","everything"]);
+// "This is Robert Smith, nice to meet you": a second Capitalized word (a surname) is allowed before the stop.
+const THIS_IS_NAME = /\bthis is\s+([^\s,.!?;:]+)(?:\s+[A-Z][a-z]+)?(?=\s*(?:[,.!]|$|\s+(?:here|speaking|btw)\b))/gi;
+const NOT_NAMES_EXPLICIT = new Set(["later","maybe","secret","private","anonymous","anything","whatever","nothing","none","nobody","classified","irrelevant","unimportant","mine","yours","back","soon","tomorrow","tonight","today","now","never","sometime","anytime","again","crazy","old","old-fashioned","young","sir","madam","boss","chief","captain","doctor","dr","mr","mrs","ms","miss","mom","dad","mum","buddy","dude","man","girl","boy","friend","honey","dear","love","babe","baby","kid","kiddo","pal","mate","bro","sis","whenever","if","when","at","on","in","by","after","before","about","directly","please","asap","the","a","an","not","no","yes","what","who","that","this","it","really","just","only","very","so","too","also","still","already","long","short","first","last","same","different","confidential","unknown","hidden","withheld","redacted","omitted","something","someone","hard","easy","common","unusual","weird","funny","boring","beautiful","ugly","up","out","me","you","him","her","them","us","sometimes","usually","mud","legion","nobody's","everything",
+  // insults and self-descriptions that follow "call me" ("call me stupid", "CALL ME CRAZY")
+  "stupid","dumb","idiot","fool","foolish","silly","naive","paranoid","cynical","old-school","picky","weird","lazy","selfish","sentimental","dramatic","biased","ignorant","uninformed","unreasonable","wrong","harsh","blunt","cheap","greedy","soft","weak","strong","tough","lucky","unlucky","skeptical","sceptical","superstitious","traditional","progressive","conservative","liberal","radical","simple","complicated","difficult","impossible","petty","stubborn","grumpy","cranky","nosy","curious","careful","cautious","reckless","hopeless","useless","worthless","mean","nice","rude","polite","anything","names"]);
 const CAPITALIZED = /^[A-Z][a-z]+(?:-[A-Z][a-z]+)?$/;     // Mike, Sarah, Mary-Ann
 const ALL_CAPS = /^[A-Z]{2,}$/;
 const WORDISH = /^[A-Za-z][A-Za-z'-]*$/;
@@ -68,7 +71,12 @@ function nameAfterStrongLeadIn(word: string) {
   return WORDISH.test(word) && word.length >= 2 && !NOT_NAMES_EXPLICIT.has(word.toLowerCase());
 }
 function nameAfterMediumLeadIn(word: string) {
-  return (CAPITALIZED.test(word) || ALL_CAPS.test(word)) && !NOT_NAMES_EXPLICIT.has(word.toLowerCase());
+  const w = word.toLowerCase();
+  if (NOT_NAMES_EXPLICIT.has(w)) return false;
+  if (CAPITALIZED.test(word)) return true;
+  // ALL CAPS after "call me" ("CALL ME DAVE") counts unless the word is an ordinary word or an insult ("CALL ME STUPID"):
+  // shouting an adjective is venting, not an introduction
+  return ALL_CAPS.test(word) && !NOT_NAMES.has(w);
 }
 function nameAfterWeakLeadIn(word: string) {
   // Capitalized only; ALL CAPS is shouting, not a name; ordinary words and descriptions are not names
