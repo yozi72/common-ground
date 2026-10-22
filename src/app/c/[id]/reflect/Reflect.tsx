@@ -11,7 +11,7 @@ type Reflection = { felt_understood: number | null; recognized_shared: number | 
 export function Reflect({ conversationId, peerAlias, endReason, questionsAsked, initialReflection, initialDecision, friendshipEnabled, initialConnection = null }: {
   conversationId: string; peerAlias: string; endReason: string | null; questionsAsked: number;
   initialReflection: Reflection | null; initialDecision: boolean | null; friendshipEnabled: boolean;
-  initialConnection?: { connectionId: string; threadId: string | null } | null;
+  initialConnection?: { connectionId: string; threadId: string | null; fromThisConversation?: boolean } | null;
 }) {
   const router = useRouter();
   const [understood, setUnderstood] = useState(initialReflection?.felt_understood ?? 0);
@@ -40,7 +40,7 @@ export function Reflect({ conversationId, peerAlias, endReason, questionsAsked, 
   }
   async function decide(d: boolean) {
     const r = await post({ action: "connection_decision", decision: d });
-    if (r) { setDecision(d); if (r.status === "connected") setConnection({ connectionId: r.connection_id, threadId: connection?.threadId ?? null }); }
+    if (r) { setDecision(d); if (r.status === "connected") setConnection({ connectionId: r.connection_id, threadId: connection?.threadId ?? null, fromThisConversation: true }); }
   }
   async function openChat() {
     if (!connection) return;
@@ -75,7 +75,11 @@ export function Reflect({ conversationId, peerAlias, endReason, questionsAsked, 
           <p className="muted text-sm">Your answer is private. If you both say yes, you both find out and get a chat under Chats that works any time, still under your aliases, still checked before delivery, and still without contact details unless you later both choose to become friends. If only one of you says yes, neither of you is told. You can come back to this from the Chats tab for 30 days.</p>
           {connected ? (
             <div className="space-y-2">
-              <div className="notice notice-ok" role="status">You both said yes. The chat with {peerAlias} is under <Link className="underline" href="/connections">Chats</Link>.</div>
+              <div className="notice notice-ok" role="status">
+                {connection?.fromThisConversation === false
+                  ? <>You already chat with {peerAlias} from an earlier conversation, so there is nothing to decide here. The chat is under <Link className="underline" href="/connections">Chats</Link>.</>
+                  : <>You both said yes. The chat with {peerAlias} is under <Link className="underline" href="/connections">Chats</Link>.</>}
+              </div>
               {ending ? (
                 <div className="notice notice-warn space-y-2 text-sm" role="alertdialog">
                   <p>End this chat with {peerAlias}? Messaging stops for both of you. What&apos;s there stays readable for 30 days, then it&apos;s deleted. Chatting again later takes both of you agreeing again.</p>

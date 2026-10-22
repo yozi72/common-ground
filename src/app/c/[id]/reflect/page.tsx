@@ -1,6 +1,7 @@
 import { notFound, redirect } from "next/navigation";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { Reflect } from "./Reflect";
+import { reflectConnection, type RecentRow } from "@/lib/connection-state";
 
 export const dynamic = "force-dynamic";
 
@@ -21,9 +22,10 @@ export default async function ReflectPage({ params }: { params: Promise<{ id: st
     supabase.from("policy_config").select("value").eq("key", "friendship_enabled").maybeSingle(),
     supabase.rpc("my_recent_conversations"),
   ]);
-  // the actual connection state (both said yes → chat exists), not just my own decision
-  const mine = ((recent ?? []) as { conversation_id: string; both_yes: boolean; connection_id: string | null; thread_id: string | null }[]).find((r) => r.conversation_id === id);
-  const connection = mine?.both_yes && mine.connection_id ? { connectionId: mine.connection_id, threadId: mine.thread_id } : null;
+  // the actual connection state: an active chat with this person (from this conversation, or an
+  // earlier one when this was a rematch), not just my own decision
+  const mine = ((recent ?? []) as RecentRow[]).find((r) => r.conversation_id === id);
+  const connection = reflectConnection(mine);
   const peerAlias = aliases?.find((a) => a.participant_id !== me.id)?.alias ?? "your partner";
   return (
     <Reflect conversationId={id} peerAlias={peerAlias} endReason={conv.end_reason} questionsAsked={conv.questions_asked}

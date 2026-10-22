@@ -2,6 +2,7 @@ import { defineConfig } from "vitest/config";
 import path from "node:path";
 
 export default defineConfig({
+  esbuild: { jsx: "automatic" },   // rendered-UI tests (react-dom/server) in .test.tsx files
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "src"),
@@ -10,7 +11,7 @@ export default defineConfig({
     },
   },
   test: {
-    include: ["tests/**/*.test.ts"],
+    include: ["tests/**/*.test.ts", "tests/**/*.test.tsx"],
     // Delivery isolation: strips provider credentials, fakes nodemailer/web-push,
     // blocks non-local fetch, refuses a non-local database. See tests/setup.ts.
     setupFiles: ["tests/setup.ts"],

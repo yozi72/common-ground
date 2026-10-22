@@ -5,7 +5,9 @@ import { supabaseBrowser } from "@/lib/supabase/client";
 import { UNREAD_CHANGED } from "@/components/useUnread";
 
 type Thread = { connection_id: string; conversation_id: string | null; peer_alias: string; my_alias: string; since: string; status: string; unread: number; last_message_at: string | null; muted: boolean; tier: "chat" | "friend"; request_from_me: boolean; request_for_me: boolean; request_available: boolean; friends_since: string | null };
-type Recent = { conversation_id: string; peer_alias: string; ended_at: string; end_reason: string | null; questions_asked: number; my_decision: boolean | null; both_yes: boolean; reflection_done: boolean; connection_id: string | null; thread_id: string | null };
+// both_yes: both decided "keep talking" in THIS conversation. connected: an active
+// chat with this person already exists (from this or an earlier conversation).
+export type Recent = { conversation_id: string; peer_alias: string; ended_at: string; end_reason: string | null; questions_asked: number; my_decision: boolean | null; both_yes: boolean; connected: boolean; reflection_done: boolean; connection_id: string | null; thread_id: string | null };
 
 // The list keeps itself current (new messages, reads elsewhere, requests,
 // removals): a realtime notification, the chat's "read" event, focus/visibility
@@ -60,8 +62,10 @@ export function Connections({ initialThreads, initialRecent }: { initialThreads:
 
   const active = threads.filter((c) => c.status === "active");
   const ended = threads.filter((c) => c.status !== "active" && c.conversation_id);
-  // ended conversations that already turned into a chat are shown as chats, not twice
-  const undecided = recent.filter((r) => !r.both_yes);
+  // ended conversations that already turned into a chat are shown as chats, not twice;
+  // a rematch with someone you already chat with points at that chat instead of asking again
+  const undecided = recent.filter((r) => !r.both_yes && !r.connected);
+  const rematches = recent.filter((r) => !r.both_yes && r.connected);
   const day = (iso: string) => new Date(iso).toLocaleDateString();
 
   return (
@@ -124,6 +128,27 @@ export function Connections({ initialThreads, initialRecent }: { initialThreads:
                   </p>
                 </div>
                 <a className={r.my_decision === null ? "btn btn-primary" : "btn btn-secondary"} href={`/c/${r.conversation_id}/reflect`}>{r.my_decision === null ? "Decide & reflect" : "Open"}</a>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      {rematches.length > 0 && (
+        <section className="space-y-3">
+          <h2 className="font-semibold text-lg">Met again</h2>
+          <ul className="space-y-3" aria-label="Conversations with people you already chat with">
+            {rematches.map((r) => (
+              <li key={r.conversation_id} className="card flex items-center justify-between gap-3 flex-wrap" data-testid="rematch">
+                <div>
+                  <p className="font-semibold">{r.peer_alias}</p>
+                  <p className="muted text-xs">{day(r.ended_at)}{r.questions_asked > 0 ? ` · ${r.questions_asked} question${r.questions_asked === 1 ? "" : "s"}` : ""}</p>
+                  <p className="text-sm mt-1">You already chat with {r.peer_alias}; nothing to decide here.{!r.reflection_done ? " You can still reflect on this conversation." : ""}</p>
+                </div>
+                <div className="flex gap-2 flex-wrap">
+                  {r.connection_id && <button className="btn btn-primary" disabled={busy === r.connection_id} onClick={() => open(r.connection_id!)}>Open chat</button>}
+                  {!r.reflection_done && <a className="btn btn-secondary" href={`/c/${r.conversation_id}/reflect`}>Reflect</a>}
+                </div>
               </li>
             ))}
           </ul>

@@ -4,6 +4,7 @@ import { Lobby } from "./Lobby";
 import { env } from "@/lib/env";
 import { getScheduleConfig, serverNow } from "@/lib/schedule-config";
 import { sessionState } from "@/lib/schedule";
+import { undecidedRecent } from "@/lib/connection-state";
 
 export const dynamic = "force-dynamic";
 
@@ -44,8 +45,9 @@ export default async function LobbyPage() {
     getScheduleConfig(),
     supabase.rpc("my_recent_conversations"),
   ]);
-  // ended conversations whose keep-talking decision is still open (reachable from Chats; nudged here)
-  const undecided = ((recent ?? []) as { conversation_id: string; peer_alias: string; my_decision: boolean | null; both_yes: boolean }[]).filter((r) => r.my_decision === null && !r.both_yes).map((r) => ({ conversation_id: r.conversation_id, peer_alias: r.peer_alias }));
+  // ended conversations whose keep-talking decision is still open (reachable from Chats; nudged here);
+  // no nudge when an active chat with that person already exists (nothing to decide)
+  const undecided = undecidedRecent((recent ?? []) as Parameters<typeof undecidedRecent>[0]);
 
   type Inv = { invitation_id: string; decision: string | null; match_invitations: { id: string; kind: string; status: string; expires_at: string; conversation_id: string | null } };
   const invs = ((invitations ?? []) as unknown as Inv[]).map((i) => ({ id: i.invitation_id, kind: i.match_invitations.kind, expires_at: i.match_invitations.expires_at, my_decision: i.decision }));
