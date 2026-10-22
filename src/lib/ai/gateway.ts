@@ -72,7 +72,9 @@ export async function moderate(input: ModerationInput, opts: CallOpts = {}): Pro
 
   const userPrompt = [
     `Message kind: ${input.kind}`,
-    `Contact sharing in this chat: ${input.contactAllowed ? "ALLOWED (both people chose to become friends; names, contact details, employers, platforms and links are fine; still block threats, harassment, dehumanization, sexual content and doxxing of third parties)" : "NOT allowed (apply identity protection)"}`,
+    `Contact sharing in this chat: ${input.contactAllowed
+      ? "ALLOWED (both people chose to become friends). The sender's OWN self-disclosure is permitted: their name, contact details, employer, social profiles, and ordinary links they share about themselves. Still block threats, harassment, dehumanization, sexual content, scams and phishing (links or requests for money, credentials, codes, gift cards), and exposing a THIRD PARTY's identity or contact details."
+      : "NOT allowed (apply identity protection)"}`,
     `Detector hits: ${hits.length ? hits.join(", ") : "none"}`,
     wrapUntrusted("recent_context", input.recent.map((r) => `${r.fromSender ? "SENDER" : "OTHER"}: ${r.body}`).join("\n") || "(none)"),
     wrapUntrusted("pending_message", input.body),

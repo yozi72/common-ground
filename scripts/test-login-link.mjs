@@ -5,6 +5,15 @@
 //   SITE_URL=https://... node scripts/test-login-link.mjs qa-tester-1@test.local
 import { createClient } from "@supabase/supabase-js";
 
+// Isolation guard: this helper creates accounts on whatever project the
+// environment points at. It refuses anything but the local stack unless the
+// hosted QA environment is designated explicitly (QA_ALLOW_HOSTED=1), and it
+// never runs under automated tests.
+const target = new URL(process.env.NEXT_PUBLIC_SUPABASE_URL ?? "http://invalid");
+const local = ["127.0.0.1", "localhost", "[::1]", "::1"].includes(target.hostname);
+if (process.env.VITEST || process.env.NODE_ENV === "test") { console.error("refusing to run under automated tests"); process.exit(2); }
+if (!local && process.env.QA_ALLOW_HOSTED !== "1") { console.error(`refusing to touch ${target.hostname}: set QA_ALLOW_HOSTED=1 to use the designated hosted QA project on purpose`); process.exit(2); }
+
 const email = process.argv[2];
 if (!email) { console.error("usage: test-login-link.mjs <email>"); process.exit(1); }
 const site = process.env.SITE_URL ?? "http://localhost:3000";

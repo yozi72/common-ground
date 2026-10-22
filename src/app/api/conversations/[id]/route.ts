@@ -3,6 +3,16 @@ import { after } from "next/server";
 import { handle, ok, parseBody, requireUser, fromRpcError, ApiError } from "@/lib/api";
 import { maybeTick } from "@/lib/workers/tick";
 import { generateNextQuestion } from "@/lib/workers/questions";
+import { Deadline } from "@/lib/workers/deadline";
+
+// Hosting: every model-calling route exports maxDuration = 60 (checked against
+// the Vercel project: see NOTES.md, item 10) and establishes ONE deadline at
+// entry (ROUTE_BUDGET_MS = 45 s) that covers auth, database work, the model
+// call with its retries and any follow-up generation; what cannot finish in
+// time is left recoverable (claims are released, the tick retries, questions
+// fall back to the bank).
+export const maxDuration = 60;
+const ROUTE_BUDGET_MS = 45_000;
 
 const Body = z.discriminatedUnion("action", [
   z.object({ action: z.literal("heartbeat") }),
@@ -34,6 +44,7 @@ const Body = z.discriminatedUnion("action", [
 
 export async function POST(req: Request, ctx: { params: Promise<{ id: string }> }) {
   return handle(async () => {
+    const deadline = Deadline.in(ROUTE_BUDGET_MS);   // one budget from request entry
     const { id } = await ctx.params;
     const { supabase } = await requireUser();
     const b = await parseBody(req, Body);
@@ -83,7 +94,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
         const { data: allowed, error } = await supabase.rpc("can_request_question", { p_conversation: id });
         if (error) throw fromRpcError(error);
         if (!allowed) return ok({ created: false });
-        const qid = await generateNextQuestion(id, "mid", { deadlineMs: 40_000 });
+        const qid = await generateNextQuestion(id, "mid", { deadlineMs: deadline.remainingMs() });
         return ok({ created: !!qid });
       }
       case "remove_friend": {

@@ -15,10 +15,18 @@ const Body = z.discriminatedUnion("action", [
   z.object({ action: z.literal("set_config"), key: z.string().max(60), value: z.unknown() }),
 ]);
 
-export const maxDuration = 60; // admin follow-up generation runs inside this budget
+// Hosting: every model-calling route exports maxDuration = 60 (checked against
+// the Vercel project: see NOTES.md, item 10) and establishes ONE deadline at
+// entry (ROUTE_BUDGET_MS = 45 s) that covers auth, database work, the model
+// call with its retries and any follow-up generation; what cannot finish in
+// time is left recoverable (claims are released, the tick retries, questions
+// fall back to the bank).
+export const maxDuration = 60;
+const ROUTE_BUDGET_MS = 45_000;
 
 export async function POST(req: Request) {
   return handle(async () => {
+    const deadline = Deadline.in(ROUTE_BUDGET_MS);   // one budget from request entry
     const { user } = await requireAdmin();
     const b = await parseBody(req, Body);
     const admin = supabaseAdmin();
@@ -32,8 +40,8 @@ export async function POST(req: Request) {
       if (error) throw new Error(error.message);
       const o = (data ?? {}) as { question_due?: boolean; revealed?: boolean };
       const { data: row } = await admin.from("pending_messages").select("conversation_id").eq("id", b.pending_id).single();
-      if (row && o.question_due) await generateNextQuestion(row.conversation_id, "mid", { deadlineMs: 40_000 });
-      if (row && o.revealed) await advanceAfterReveal(row.conversation_id, Deadline.in(40_000));
+      if (row && o.question_due) await generateNextQuestion(row.conversation_id, "mid", { deadlineMs: deadline.remainingMs() });
+      if (row && o.revealed) await advanceAfterReveal(row.conversation_id, deadline);
       return ok(data);
     }
     if (b.action === "resolve_report") {
@@ -49,8 +57,8 @@ export async function POST(req: Request) {
       const o = (data ?? {}) as { question_due?: boolean; revealed?: boolean; pending_id?: string };
       if (o.pending_id && (o.question_due || o.revealed)) {
         const { data: row } = await admin.from("pending_messages").select("conversation_id").eq("id", o.pending_id).single();
-        if (row && o.question_due) await generateNextQuestion(row.conversation_id, "mid", { deadlineMs: 40_000 });
-        if (row && o.revealed) await advanceAfterReveal(row.conversation_id, Deadline.in(40_000));
+        if (row && o.question_due) await generateNextQuestion(row.conversation_id, "mid", { deadlineMs: deadline.remainingMs() });
+        if (row && o.revealed) await advanceAfterReveal(row.conversation_id, deadline);
       }
       return ok(data);
     }

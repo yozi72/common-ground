@@ -338,3 +338,230 @@ begin
   end if;
   return v_out || jsonb_build_object('pending_id', v_pending);
 end $$;
+
+-- ---------------------------------------------------------------------------
+-- 5. Consent records describe the actual action.
+-- Finding: a decline wrote contact_sharing_request granted=false for the
+-- responder, who never made a request. Event vocabulary from here on:
+--   contact_sharing_request  (requester, true)            asked to become friends
+--   contact_sharing_response (responder, true/false)      accepted / declined someone else's request
+--   contact_sharing          (both, true)                 activation: contact sharing is on for the pair
+--   contact_sharing          (actor, false)               withdrawal: the actor ended the friendship or blocked
+--   contact_sharing_ended    (the other person, false)    their sharing ended because of the actor
+-- A decline stays private: the responder's event is readable by the responder
+-- only (consent_self_read), the requester gets no event and no visible change.
+-- ---------------------------------------------------------------------------
+create or replace function public.respond_friend_request(p_connection uuid, p_accept boolean)
+returns text language plpgsql security definer set search_path = public as $$
+declare v_uid uuid := public.assert_user(); v_c public.connections%rowtype; v_peer uuid;
+  v_cool int := (public.cfg('friend_request_cooldown_days', '7'))::int;
+begin
+  select * into v_c from public.connections where id = p_connection and (account_a = v_uid or account_b = v_uid);
+  if v_c.id is null then raise exception 'connection not found' using errcode = '42501'; end if;
+  perform public.lock_accounts(v_c.account_a, v_c.account_b);
+  select * into v_c from public.connections where id = p_connection for update;
+  v_peer := case when v_c.account_a = v_uid then v_c.account_b else v_c.account_a end;
+  if v_c.friend_requested_by is distinct from v_peer or v_c.friend_request_declined_at is not null
+     or v_c.friend_requested_at is null or v_c.friend_requested_at <= now() - make_interval(days => v_cool) then
+    raise exception 'no request to answer' using errcode = 'P0001';
+  end if;
+  if v_c.status <> 'active' or public.is_blocked_either_way(v_uid, v_peer) then raise exception 'this chat has ended' using errcode = 'P0001'; end if;
+  if p_accept then
+    if not (public.cfg('contact_sharing_enabled', 'false'))::boolean then raise exception 'contact sharing is not enabled' using errcode = 'P0001'; end if;
+    update public.connections set tier = 'friend', friends_since = now(), friend_requested_by = null, friend_request_declined_at = null where id = p_connection;
+    insert into public.consent_events (account_id, kind, version, granted) values
+      (v_uid, 'contact_sharing_response', 'v1', true),        -- I accepted their request
+      (v_uid, 'contact_sharing', 'v1', true), (v_peer, 'contact_sharing', 'v1', true);   -- activation for both
+    insert into public.notifications (account_id, kind, payload) values
+      (v_peer, 'friends', jsonb_build_object('connection_id', p_connection)),
+      (v_uid, 'friends', jsonb_build_object('connection_id', p_connection));
+    return 'friends';
+  end if;
+  insert into public.consent_events (account_id, kind, version, granted) values (v_uid, 'contact_sharing_response', 'v1', false);   -- I declined their request
+  update public.connections set friend_request_declined_at = now() where id = p_connection;
+  return 'declined';
+end $$;
+
+-- Withdrawal/ending events when a friends-tier connection ends. Called by
+-- remove_friend and block_peer under the pair's account locks.
+create or replace function public.record_contact_sharing_end(p_actor uuid, p_peer uuid)
+returns void language sql security definer set search_path = public as $$
+  insert into public.consent_events (account_id, kind, version, granted) values (p_actor, 'contact_sharing', 'v1', false), (p_peer, 'contact_sharing_ended', 'v1', false);
+$$;
+revoke execute on function public.record_contact_sharing_end(uuid, uuid) from public, anon, authenticated;
+
+create or replace function public.remove_friend(p_connection uuid)
+returns void language plpgsql security definer set search_path = public as $$
+declare v_uid uuid := public.assert_user(); v_c public.connections%rowtype; v_conv uuid; v_peer uuid;
+begin
+  select * into v_c from public.connections where id = p_connection and (account_a = v_uid or account_b = v_uid);
+  if v_c.id is null then raise exception 'connection not found' using errcode = '42501'; end if;
+  perform public.lock_accounts(v_c.account_a, v_c.account_b);                            -- 1
+  select * into v_c from public.connections where id = p_connection for update;         -- 2
+  v_peer := case when v_c.account_a = v_uid then v_c.account_b else v_c.account_a end;
+  if v_c.status = 'active' and v_c.tier = 'friend' then perform public.record_contact_sharing_end(v_uid, v_peer); end if;
+  update public.connections set status = 'ended', ended_at = now() where id = p_connection and status = 'active';
+  perform public.revoke_connection_consent(v_c.account_a, v_c.account_b);
+  select id into v_conv from public.conversations where connection_id = p_connection and kind = 'friend';
+  if v_conv is not null then
+    update public.conversations set status = 'ended', ended_at = now(), end_reason = 'unfriended' where id = v_conv and status <> 'ended';   -- 3
+    update public.conversation_questions set status = 'closed' where conversation_id = v_conv and status = 'open';                           -- 4
+    perform public.close_pending_delivery(v_conv, 'unfriended');                                                                            -- 5
+    update public.push_queue set status = 'cancelled', last_error = 'friendship ended' where conversation_id = v_conv and status in ('queued', 'claimed');
+    insert into public.notifications (account_id, kind, payload)
+      select p.account_id, 'friendship_ended', jsonb_build_object('conversation_id', v_conv) from public.participants p where p.conversation_id = v_conv and p.account_id <> v_uid;
+  end if;
+end $$;
+
+create or replace function public.block_peer(p_conversation uuid)
+returns void language plpgsql security definer set search_path = public as $$
+declare v_uid uuid := public.assert_user(); v_peer uuid; v_t uuid;
+begin
+  if not public.is_participant(p_conversation) then raise exception 'not a participant' using errcode = '42501'; end if;
+  select account_id into v_peer from public.participants where conversation_id = p_conversation and account_id <> v_uid;
+  if v_peer is null then return; end if;
+  perform public.lock_accounts(v_uid, v_peer);                                            -- 1
+  insert into public.blocks (blocker_account_id, blocked_account_id, conversation_id) values (v_uid, v_peer, p_conversation) on conflict do nothing;
+  if exists (select 1 from public.connections where status = 'active' and tier = 'friend'
+             and ((account_a = v_uid and account_b = v_peer) or (account_a = v_peer and account_b = v_uid))) then
+    perform public.record_contact_sharing_end(v_uid, v_peer);
+  end if;
+  update public.connections set status = 'ended', ended_at = now()                        -- 2
+    where status = 'active' and ((account_a = v_uid and account_b = v_peer) or (account_a = v_peer and account_b = v_uid));
+  perform public.revoke_connection_consent(v_uid, v_peer);
+  for v_t in select c.id from public.conversations c where c.status <> 'ended' and exists (select 1 from public.participants p where p.conversation_id = c.id and p.account_id = v_uid)
+    and exists (select 1 from public.participants p where p.conversation_id = c.id and p.account_id = v_peer) loop
+    update public.participants set left_at = now() where conversation_id = v_t and account_id = v_uid and left_at is null;
+    perform public.end_conversation(v_t, 'blocked');                                     -- 3 → 5 (pending rows are cancelled inside)
+  end loop;
+end $$;
+
+-- ---------------------------------------------------------------------------
+-- 6. Actionable friend-request flags only while the relationship is active.
+-- Finding: request_for_me / request_from_me were true on ended or blocked
+-- connections, so a chat could show a request nobody can answer.
+-- ---------------------------------------------------------------------------
+create or replace function public.friend_threads_overview()
+returns table (connection_id uuid, conversation_id uuid, peer_alias text, my_alias text, since timestamptz, status text, unread int, last_message_at timestamptz, muted boolean,
+               tier text, request_from_me boolean, request_for_me boolean, request_available boolean, friends_since timestamptz, history_cleared_at timestamptz)
+language sql stable security definer set search_path = public as $$
+  with cool as (select make_interval(days => (public.cfg('friend_request_cooldown_days', '7'))::int) as d)
+  select c.id,
+         cv.id,
+         case when c.account_a = auth.uid() then c.alias_b else c.alias_a end,
+         case when c.account_a = auth.uid() then c.alias_a else c.alias_b end,
+         c.created_at, c.status,
+         coalesce((
+           select count(*)::int from public.approved_messages m
+           join public.participants p on p.id = m.sender_participant_id
+           where m.conversation_id = cv.id and m.kind = 'chat' and p.account_id <> auth.uid()
+             and m.created_at > coalesce((select tr.last_read_at from public.thread_reads tr where tr.conversation_id = cv.id and tr.account_id = auth.uid()), 'epoch'::timestamptz)
+         ), 0),
+         cv.last_message_at,
+         coalesce((select tr.muted from public.thread_reads tr where tr.conversation_id = cv.id and tr.account_id = auth.uid()), false),
+         c.tier,
+         -- live request from me: identical whether the other person declined or has not answered; only while the chat is active
+         coalesce(live.ok and c.friend_requested_by = auth.uid() and c.friend_requested_at > now() - cool.d, false),
+         coalesce(live.ok and c.friend_requested_by is not null and c.friend_requested_by <> auth.uid() and c.friend_request_declined_at is null and c.friend_requested_at > now() - cool.d, false),
+         live.ok and c.tier = 'chat'
+           and (c.friend_requested_at is null or c.friend_requested_at <= now() - cool.d)
+           and (public.cfg('contact_sharing_enabled', 'false'))::boolean,
+         c.friends_since,
+         cv.history_cleared_at
+  from public.connections c
+  cross join cool
+  cross join lateral (select c.status = 'active' and not public.is_blocked_either_way(c.account_a, c.account_b) and coalesce(cv0.status, 'chatting') <> 'ended' as ok
+                      from (select status from public.conversations where connection_id = c.id and kind = 'friend') cv0
+                      union all select c.status = 'active' and not public.is_blocked_either_way(c.account_a, c.account_b)
+                      where not exists (select 1 from public.conversations where connection_id = c.id and kind = 'friend')) live
+  left join public.conversations cv on cv.connection_id = c.id and cv.kind = 'friend'
+  where c.account_a = auth.uid() or c.account_b = auth.uid()
+  order by coalesce(cv.last_message_at, c.created_at) desc
+$$;
+
+-- ---------------------------------------------------------------------------
+-- 7. Retention for resolved match invitations (none existed).
+-- Resolved rows (expired/declined/accepted) are kept retention_queue_days
+-- (default 90), like queue entries; pending ones are never touched. Foreign
+-- keys: invitation_participants cascade; availability_requests (already purged
+-- on the same window) and conversations.invitation_id are set null, and nothing
+-- reads conversations.invitation_id after the conversation opened. Matching
+-- history for metrics lives in metric_events (invitation_created/declined/
+-- missed), kept retention_metrics_days, not in this table.
+-- ---------------------------------------------------------------------------
+create or replace function public.purge_retention()
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  d_msg int := (public.cfg('retention_messages_days', '30'))::int;
+  d_pending int := (public.cfg('retention_pending_days', '7'))::int;
+  d_reports int := (public.cfg('retention_reports_days', '365'))::int;
+  d_queue int := (public.cfg('retention_queue_days', '90'))::int;
+  d_metrics int := (public.cfg('retention_metrics_days', '365'))::int;
+  d_outbox int := (public.cfg('retention_outbox_days', '30'))::int;
+  d_sends int := (public.cfg('retention_reminder_sends_days', '30'))::int;
+  n1 int; n2 int; n3 int; n4 int; n5 int; n6 int; n7 int; n8 int; n9 int; n10 int; n11 int; n12 int;
+begin
+  perform public.assert_service_role();
+  delete from public.approved_messages m using public.conversations c
+    where m.conversation_id = c.id and c.kind = 'live' and c.status = 'ended' and c.ended_at < now() - make_interval(days => d_msg);
+  get diagnostics n1 = row_count;
+  delete from public.approved_messages m using public.conversations c
+    where m.conversation_id = c.id and c.kind = 'friend' and c.status = 'ended' and c.ended_at < now() - make_interval(days => d_msg);
+  get diagnostics n6 = row_count;
+  delete from public.question_answers a using public.conversations c
+    where a.conversation_id = c.id and c.status = 'ended' and c.ended_at < now() - make_interval(days => d_msg);
+  get diagnostics n5 = row_count;
+  delete from public.conversation_questions q using public.conversations c
+    where q.conversation_id = c.id and c.status = 'ended' and c.ended_at < now() - make_interval(days => d_msg)
+      and not exists (select 1 from public.pending_messages pm join public.appeals ap on ap.pending_message_id = pm.id
+                      where pm.question_id = q.id and ap.status = 'open');
+  get diagnostics n11 = row_count;
+  delete from public.pending_messages where status <> 'pending' and updated_at < now() - make_interval(days => d_pending)
+    and not exists (select 1 from public.appeals a where a.pending_message_id = pending_messages.id and a.status = 'open');
+  get diagnostics n2 = row_count;
+  delete from public.reports where status in ('resolved', 'dismissed') and resolved_at < now() - make_interval(days => d_reports);
+  get diagnostics n3 = row_count;
+  delete from public.rate_limits where window_start < now() - interval '2 days';
+  get diagnostics n4 = row_count;
+  delete from public.notifications where created_at < now() - interval '30 days';
+  delete from public.push_queue where created_at < now() - interval '7 days' and status not in ('queued', 'claimed');
+  delete from public.availability_requests where status not in ('waiting', 'invited') and coalesce(ended_at, created_at) < now() - make_interval(days => d_queue);
+  get diagnostics n7 = row_count;
+  delete from public.match_invitations where status <> 'pending' and coalesce(resolved_at, expires_at, created_at) < now() - make_interval(days => d_queue);
+  get diagnostics n12 = row_count;
+  delete from public.metric_events where (kind = 'worker_tick' and created_at < now() - interval '7 days') or created_at < now() - make_interval(days => d_metrics);
+  get diagnostics n8 = row_count;
+  delete from public.email_outbox where status not in ('queued', 'claimed') and created_at < now() - make_interval(days => d_outbox);
+  get diagnostics n9 = row_count;
+  delete from public.reminder_sends where created_at < now() - make_interval(days => d_sends);
+  get diagnostics n10 = row_count;
+  delete from public.model_usage where day < current_date - 90;
+  return jsonb_build_object('messages', n1, 'friend_messages', n6, 'answers', n5, 'questions', n11, 'pending', n2, 'reports', n3, 'rate_limits', n4,
+    'queue_entries', n7, 'invitations', n12, 'metric_events', n8, 'outbox', n9, 'reminder_sends', n10);
+end $$;
+
+-- ---------------------------------------------------------------------------
+-- 8. Lobby matching throttle, shared across instances.
+-- Finding: the lobby route throttled run_matching with a per-process
+-- timestamp, which is not a shared limit on a multi-instance host. The limit
+-- now lives in the database: run_matching_if_due runs matching only when the
+-- last run (any instance) is older than p_min_seconds, otherwise returns null.
+-- The minute tick still calls run_matching unconditionally.
+-- ---------------------------------------------------------------------------
+create table if not exists public.worker_state (key text primary key, at timestamptz not null default now());
+alter table public.worker_state enable row level security;
+revoke all on public.worker_state from anon, authenticated;
+
+create or replace function public.run_matching_if_due(p_min_seconds int default 10)
+returns int language plpgsql security definer set search_path = public as $$
+declare v_at timestamptz; v_n int;
+begin
+  perform public.assert_service_role();
+  perform pg_advisory_xact_lock(hashtext('common_ground_matching'));      -- same lock run_matching takes; re-entrant in this transaction
+  select at into v_at from public.worker_state where key = 'last_matching_run';
+  if v_at is not null and v_at > now() - make_interval(secs => p_min_seconds) then return null; end if;
+  insert into public.worker_state (key, at) values ('last_matching_run', now()) on conflict (key) do update set at = now();
+  v_n := public.run_matching();
+  return v_n;
+end $$;
+revoke execute on function public.run_matching_if_due(int) from public, anon, authenticated;
