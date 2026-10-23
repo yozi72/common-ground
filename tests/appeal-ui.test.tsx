@@ -2,7 +2,8 @@
 // the rendered HeldItem in open and ended chats (react-dom/server).
 import { describe, it, expect, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { appealFormInitial, appealFormReducer, fastPollDue, heldNeedsRefresh, type HeldMessage } from "@/lib/held-messages";
+import { appealFormInitial, appealFormReducer, fastPollDue, heldNeedsRefresh, heldAnswerFor, FAST_POLL_HORIZON_MS, type HeldMessage } from "@/lib/held-messages";
+import { CLAIM_LEASE_SECONDS } from "@/lib/workers/moderation";
 
 vi.mock("@/lib/supabase/client", () => ({ supabaseBrowser: () => ({ rpc: async () => ({ data: [], error: null }) }) }));
 const { HeldItem } = await import("@/components/HeldMessages");
@@ -74,5 +75,35 @@ describe("HeldItem rendering", () => {
     expect(overturnedUndeliverable).not.toContain("Send this version");
     const overturnedDelivered = render({ ...base, status: "approved", appeal_id: "a", appeal_status: "overturned" }, true);
     expect(overturnedDelivered).toContain("the message was delivered");
+  });
+});
+
+describe("pilot-readiness fixes", () => {
+  it("a held answer keeps Discard (and an eligible rewording) while an appeal is open or after it was upheld; no 'Appeal sent' next to a final outcome", () => {
+    const answer: HeldMessage = { ...base, kind: "answer", question_id: "q1" };
+    const openAppeal = render({ ...answer, appeal_id: "a", appeal_status: "open" }, true);
+    expect(openAppeal).toContain("Discard");
+    expect(openAppeal).toContain("Send this version");
+    expect(openAppeal).toContain("Appeal sent");
+    expect(openAppeal).not.toContain(">Appeal<");
+    const upheld = render({ ...answer, appeal_id: "a", appeal_status: "upheld" }, true);
+    expect(upheld).toContain("Discard");
+    expect(upheld).toContain("the decision stands");
+    expect(upheld).not.toContain("Appeal sent");
+    const blockedUpheld = render({ ...answer, status: "blocked", suggested_revision: null, appeal_id: "a", appeal_status: "upheld" }, true);
+    expect(blockedUpheld).toContain("Dismiss");
+  });
+  it("the held answer shown is the one for the question on screen", () => {
+    const old: HeldMessage = { ...base, id: "old", kind: "answer", question_id: "q1" };
+    const cur: HeldMessage = { ...base, id: "cur", kind: "answer", question_id: "q2" };
+    expect(heldAnswerFor([old, cur], "q2")?.id).toBe("cur");
+    expect(heldAnswerFor([old], "q2")).toBeNull();                                   // an old held answer never takes over the current question
+    expect(heldAnswerFor([{ ...cur, status: "cancelled" }], "q2")).toBeNull();
+  });
+  it("the fast-poll horizon covers the moderation claim lease, so an actively checked message keeps fast polling", () => {
+    expect(FAST_POLL_HORIZON_MS).toBeGreaterThan(CLAIM_LEASE_SECONDS * 1000);
+    const now = Date.now();
+    expect(fastPollDue([{ status: "pending", next_attempt_at: new Date(now + CLAIM_LEASE_SECONDS * 1000).toISOString() }], now)).toBe(true);   // just claimed
+    expect(fastPollDue([{ status: "pending", next_attempt_at: new Date(now + 3 * 3600_000).toISOString() }], now)).toBe(false);            // budget-deferred
   });
 });

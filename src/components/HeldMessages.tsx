@@ -83,8 +83,8 @@ export function HeldItem({ m, open = false, onChanged }: { m: HeldMessage; open?
         </div>
       )}
       {error && <p className="notice notice-bad text-xs" role="alert">{error}</p>}
-      {appealable && (
-        form.phase === "editing" || form.phase === "sending" || form.phase === "error" ? (
+      {held && (
+        appealable && (form.phase === "editing" || form.phase === "sending" || form.phase === "error") ? (
           <form className="space-y-2" onSubmit={(e) => { e.preventDefault(); void submitAppeal(); }}>
             <label className="block text-xs" htmlFor={`appeal-${m.id}`}>Tell the reviewer why this decision should be reconsidered (optional)</label>
             <textarea id={`appeal-${m.id}`} className="field text-sm" rows={2} maxLength={1000} value={form.note} disabled={sending} onChange={(e) => dispatch({ type: "note", note: e.target.value })} />
@@ -95,14 +95,16 @@ export function HeldItem({ m, open = false, onChanged }: { m: HeldMessage; open?
             </div>
           </form>
         ) : (
+          // a held message can always be discarded (and a deliverable rewording accepted), whatever its appeal state:
+          // discarding a held answer frees the question so the sender can answer again or skip; the appeal record stays
           <div className="flex flex-wrap gap-2">
             {open && canAcceptRevision(m) && <button className="btn btn-primary text-xs px-3 py-1.5 min-h-0" disabled={!!busy} onClick={() => act("accept_revision")}>Send this version</button>}
-            <button className="btn btn-ghost text-xs px-3 py-1.5 min-h-0" disabled={!!busy} onClick={() => dispatch({ type: "open" })}>Appeal</button>
+            {appealable && <button className="btn btn-ghost text-xs px-3 py-1.5 min-h-0" disabled={!!busy} onClick={() => dispatch({ type: "open" })}>Appeal</button>}
             <button className="btn btn-secondary text-xs px-3 py-1.5 min-h-0" disabled={!!busy} onClick={() => act("cancel")}>{m.status === "blocked" ? "Dismiss" : "Discard"}</button>
           </div>
         )
       )}
-      {(form.phase === "sent" || outcome.state === "open") && <p className="text-xs" role="status">Appeal sent. A reviewer will look at it; the message stays undelivered unless they overturn the decision.{outcome.state === "open" && outcome.note ? ` Your note: “${outcome.note}”` : form.phase === "sent" && form.note ? ` Your note: “${form.note}”` : ""}</p>}
+      {(outcome.state === "open" || (form.phase === "sent" && outcome.state === "none")) && <p className="text-xs" role="status">Appeal sent. A reviewer will look at it; the message stays undelivered unless they overturn the decision.{outcome.state === "open" && outcome.note ? ` Your note: “${outcome.note}”` : form.phase === "sent" && form.note ? ` Your note: “${form.note}”` : ""}</p>}
       {outcome.state === "upheld" && <p className="text-xs" role="status">Appeal reviewed: the decision stands.{outcome.resolutionNote ? ` Reviewer: ${outcome.resolutionNote}` : ""}</p>}
       {outcome.state === "overturned" && (
         <p className="text-xs" role="status">{outcome.delivered ? "Appeal accepted: the message was delivered." : (outcome.explanation ?? "Appeal accepted, but the message could not be delivered.")}{outcome.resolutionNote ? ` Reviewer: ${outcome.resolutionNote}` : ""}</p>

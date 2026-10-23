@@ -2,7 +2,7 @@
 // after-appeal) and their appeal outcomes. Shared by the chat screen, the
 // reflection page and the tests.
 export type HeldMessage = {
-  id: string; kind: "chat" | "answer"; body: string; status: "revise" | "blocked" | "cancelled" | string;
+  id: string; kind: "chat" | "answer"; question_id?: string | null; body: string; status: "revise" | "blocked" | "cancelled" | string;
   user_explanation: string | null; suggested_revision: string | null; undeliverable_reason: string | null; created_at: string;
   appeal_id: string | null; appeal_status: "open" | "upheld" | "overturned" | string | null; appeal_note: string | null;
   appeal_resolution_note: string | null; appeal_created_at: string | null; appeal_resolved_at: string | null;
@@ -71,7 +71,16 @@ export function heldNeedsRefresh(rows: HeldMessage[]): boolean {
 // must not keep the screen polling for hours: it falls back to the regular
 // 5 s poll and realtime, and becomes "live" again when its retry time nears.
 export type PollRow = { status: string; next_attempt_at?: string | null };
-export const FAST_POLL_HORIZON_MS = 60_000;
+// Must cover the moderation claim lease (CLAIM_LEASE_SECONDS = 75 s in
+// workers/moderation.ts): a claimed message's next_attempt_at sits one lease
+// ahead, and it must still count as actively checked. A budget deferral sits
+// hours ahead (the daily reset) and does not.
+export const FAST_POLL_HORIZON_MS = 90_000;
 export function fastPollDue(rows: PollRow[], nowMs: number): boolean {
   return rows.some((r) => r.status === "pending" && (!r.next_attempt_at || Date.parse(r.next_attempt_at) <= nowMs + FAST_POLL_HORIZON_MS));
+}
+
+// The held custom answer for the question on screen, never an older one.
+export function heldAnswerFor(rows: HeldMessage[], questionId: string): HeldMessage | null {
+  return rows.find((m) => m.kind === "answer" && m.question_id === questionId && (m.status === "revise" || m.status === "blocked")) ?? null;
 }

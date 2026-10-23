@@ -34,16 +34,10 @@ async function questionWork(admin: ReturnType<typeof supabaseAdmin>, limit: numb
   return (data ?? []) as QuestionWork[];
 }
 
-// Round-robin across the three kinds of question work so a backlog of one kind
-// (say, many fresh openings) cannot starve the others.
-export function interleaveWork(items: QuestionWork[]): QuestionWork[] {
-  const byNeed: Record<string, QuestionWork[]> = { first: [], successor: [], mid: [] };
-  for (const w of items) (byNeed[w.need] ??= []).push(w);
-  const out: QuestionWork[] = [];
-  const lists = [byNeed.first, byNeed.successor, byNeed.mid];
-  while (lists.some((l) => l.length)) for (const l of lists) { const w = l.shift(); if (w) out.push(w); }
-  return out;
-}
+// Order comes from question_work (migration 0018): items ranked within their
+// kind and ordered by rank, then by a stable waiting anchor, so the one slot a
+// short tick can afford goes to the oldest waiting item of any kind. Nothing
+// is re-ordered here.
 
 export async function runTick(opts: { retention?: boolean; source?: string; budgetMs?: number; clock?: () => number } = {}) {
   const admin = supabaseAdmin();
@@ -76,7 +70,7 @@ export async function runTick(opts: { retention?: boolean; source?: string; budg
 
   await stage("questions", async () => {
     const result = { asked: 0, advanced: 0, mid: 0, failed: 0, deferred: 0 };
-    const work = interleaveWork(await questionWork(admin, 50));   // re-read: moderation may have revealed or asked some
+    const work = await questionWork(admin, 50);   // re-read: moderation may have revealed or asked some
     for (const w of work) {
       if (deadline.remainingMs() < QUESTION_ITEM_MS) { result.deferred += 1; continue; }
       try {

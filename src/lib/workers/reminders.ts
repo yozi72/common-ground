@@ -66,17 +66,17 @@ export async function sendDueReminders(nowMs = Date.now(), deadline: Deadline = 
           if (deadline.remainingMs() < MIN_SEND_MS) { out.deferred++; break; }
           const claim = await claimSend(admin, p.account_id, sessionIso, "push", s.id);
           if (!claim) continue;
-          if (!pushOn) { await finish(admin, claim.id, "skipped", "push not configured"); out.push.skipped++; continue; }
+          if (!pushOn) { await finish(admin, claim, "skipped", "push not configured"); out.push.skipped++; continue; }
           if (!isAllowedPushEndpoint(s.endpoint)) {
             // never contact an endpoint outside the allowlist, whatever is stored
             await admin.from("push_subscriptions").update({ disabled_at: new Date().toISOString() }).eq("id", s.id);
-            await finish(admin, claim.id, "skipped", "endpoint not allowed"); out.push.skipped++; continue;
+            await finish(admin, claim, "skipped", "endpoint not allowed"); out.push.skipped++; continue;
           }
           let started = false;
           try {
             const payload = JSON.stringify({ title: "Common Ground", body: `Tonight's conversation hour starts in ${lead} minutes.`, url: `${env.siteUrl()}/lobby`, tag: `session-${sessionIso}` });
             await within(deadline, "push", () => { started = true; return doPush(s, payload, lead * 60, Math.min(PUSH_TIMEOUT_MS, deadline.remainingMs())); }, PUSH_TIMEOUT_MS);
-            await finish(admin, claim.id, "sent", null);
+            await finish(admin, claim, "sent", null);
             out.push.sent++;
           } catch (e) {
             if (e instanceof DeadlineError) {
@@ -86,7 +86,7 @@ export async function sendDueReminders(nowMs = Date.now(), deadline: Deadline = 
             const status = (e as { statusCode?: number }).statusCode;
             if (status === 404 || status === 410) {
               await admin.from("push_subscriptions").update({ disabled_at: new Date().toISOString(), failures: 99 }).eq("id", s.id);
-              await finish(admin, claim.id, "failed", `subscription gone (${status})`);
+              await finish(admin, claim, "failed", `subscription gone (${status})`);
               out.push.disabled++;
             } else {
               await retryOrFail(admin, claim, `push ${status ?? ""} ${(e as Error).message}`.trim());
@@ -108,7 +108,7 @@ export async function sendDueReminders(nowMs = Date.now(), deadline: Deadline = 
           const t = formatSessionTime(session, cfg.timezone, cfg.timezone);
           const unsub = `${env.siteUrl()}/api/reminders/unsubscribe?t=${unsubscribeToken(p.account_id)}`;
           await within(deadline, "email", () => { started = true; return doEmail(to, "Common Ground: the conversation hour starts soon", `Today's session starts in ${lead} minutes (${t.range} ${t.tzName}).\n\nJoin at the start for the best chance of a match: ${env.siteUrl()}/lobby\n\nStop these emails: ${unsub}\nOr manage reminders under Profile → Reminders.`, { unsubscribeUrl: unsub, idempotencyKey: `reminder/${claim.id}`, timeoutMs: Math.min(EMAIL_TIMEOUT_MS, deadline.remainingMs()) }); }, EMAIL_TIMEOUT_MS);
-          await finish(admin, claim.id, "sent", null);
+          await finish(admin, claim, "sent", null);
           out.email.sent++;
         } catch (e) {
           if (e instanceof DeadlineError && !started) { if (await releaseSend(admin, claim)) out.email.released++; continue; }   // never started: no attempt consumed
@@ -150,13 +150,17 @@ async function claimSend(admin: ReturnType<typeof supabaseAdmin>, account: strin
   return null;
 }
 
-async function finish(admin: ReturnType<typeof supabaseAdmin>, id: string, status: "sent" | "failed" | "skipped", error: string | null) {
-  await admin.from("reminder_sends").update({ status, last_error: error, sent_at: status === "sent" ? new Date().toISOString() : null }).eq("id", id);
+// Terminal writes are conditional on the claim still being ours (status
+// 'claimed' with the attempt count we set): a stale worker whose claim was
+// reclaimed or already completed by another worker changes nothing.
+async function finish(admin: ReturnType<typeof supabaseAdmin>, claim: Claim, status: "sent" | "failed" | "skipped", error: string | null) {
+  await admin.from("reminder_sends").update({ status, last_error: error, sent_at: status === "sent" ? new Date().toISOString() : null })
+    .eq("id", claim.id).eq("status", "claimed").eq("attempts", claim.attempts);
 }
 
 async function retryOrFail(admin: ReturnType<typeof supabaseAdmin>, claim: Claim, error: string) {
   // status 'failed' with attempts < MAX lets the next tick retry inside the window
-  await finish(admin, claim.id, "failed", error.slice(0, 300));
+  await finish(admin, claim, "failed", error.slice(0, 300));
 }
 
 // RFC 8058 one-click unsubscribe headers (mail providers POST "List-Unsubscribe=One-Click"

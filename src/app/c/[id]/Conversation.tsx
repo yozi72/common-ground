@@ -5,7 +5,7 @@ import { supabaseBrowser } from "@/lib/supabase/client";
 import { TwoCups } from "@/components/Illustrations";
 import { UNREAD_CHANGED } from "@/components/useUnread";
 import { HeldMessages, HeldItem } from "@/components/HeldMessages";
-import { fastPollDue, type HeldMessage } from "@/lib/held-messages";
+import { fastPollDue, heldAnswerFor, type HeldMessage } from "@/lib/held-messages";
 import { readMarkFor, readMarkAfter, PAGE_SIZE } from "@/lib/chat-history";
 import { ChatSync, type SyncState } from "@/lib/chat-sync";
 import { latestMessages, olderMessages, newerMessages, existingIds, actionablePending } from "@/lib/chat-queries";
@@ -294,7 +294,7 @@ export function Conversation({ conversationId, myParticipantId, myAlias, peerAli
       {openQuestion && (
         <QuestionCard q={openQuestion} mine={myAnswerFor(openQuestion.id)} peerAlias={peerAlias} peerAnswered={!!peerAnswerFor(openQuestion.id)}
           pendingAnswer={pending.find((p) => p.question_id === openQuestion.id && ["pending", "review", "failed"].includes(p.status)) ?? null}
-          heldAnswer={held.find((m) => m.kind === "answer" && (m.status === "revise" || m.status === "blocked")) ?? null}
+          heldAnswer={heldAnswerFor(held, openQuestion.id)}
           onHeldChanged={onHeldChanged}
           onChoice={(i) => api(`/api/questions/${openQuestion.id}`, { action: "choice", choice: i }).then(load)}
           onSkip={() => api(`/api/questions/${openQuestion.id}`, { action: "skip" }).then(load)}
