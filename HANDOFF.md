@@ -113,6 +113,19 @@ All nine findings were confirmed and fixed in `2c165c7` (migration `0004_review_
 | 7 | Success metric counted one participant | `conversation_opened` logged for both participants | pilot “metric is recorded for both participants” |
 | — | Sign-in page wording | mentions optional session reminders | — |
 
+## Pilot-readiness release (2026-10-22, from 24c695b / 0018) — status
+Migration `0019_held_answers.sql`. Focused fixes only; no new audit.
+
+| # | Finding | Implementation | Test | Result |
+|---|---|---|---|---|
+| 1 | A held opening-round answer lost Discard after an appeal; the question card got stuck; held answers not tied to their question | `HeldMessages.tsx` (Discard/Dismiss always, rewording when eligible), `heldAnswerFor`, `Conversation.tsx`, 0019 `my_held_messages.question_id` | `pilot-ready.test.tsx` §1, `appeal-ui.test.tsx` rendered controls | pass |
+| 2 | `tick.ts` still re-interleaved question work, undoing 0018's fair order (the finishing-fixes row claimed otherwise; that claim was wrong) | `tick.ts` keeps the database order | `pilot-ready.test.tsx` §2 (one generation per tick, backlog, arrivals) | pass |
+| 3 | 60 s fast-poll horizon vs 75 s claim lease | `FAST_POLL_HORIZON_MS` 90 s | `appeal-ui.test.tsx` (horizon > lease, claimed row polls, deferred does not) | pass |
+| 4 | Reminder completion updated by id alone | `finish(claim, …)` conditional on status and attempt count | `pilot-ready.test.tsx` §4 (stale "sent" after a reclaim changes nothing) | pass |
+| 5 | "Appeal sent" shown next to a final outcome | `HeldMessages.tsx` | `appeal-ui.test.tsx` | pass |
+
+Local verification only: database-backed tests on the local stack with mocked providers. Physical-phone push and a hosted two-device run remain pending.
+
 ## Finishing fixes (2026-10-22, combined reviews of 857a285 / 0017) — status
 Code 3791cb8, migration `0018_fairness_and_release.sql` (hosted), Vercel production Ready. Verification: `npx vitest run` 25 files / 331 tests passed; typecheck, lint and production build clean. Each finding was verified against the code before changing it; all six reproduced.
 
@@ -121,7 +134,7 @@ Code 3791cb8, migration `0018_fairness_and_release.sql` (hosted), Vercel product
 | 1 | Appeals: immediate "Appeal sent", no persisted status, cancelled rows vanish, HeldMessages only in ended chats, no refresh on resolution | `held-messages.ts` (`appealFormReducer`, `heldNeedsRefresh`), `HeldMessages.tsx` (`HeldItem` shared, `open` copy, 15 s bounded refresh while an appeal is open), `Conversation.tsx` loads `my_held_messages` for open chats; 0018 §4 lists delivered-after-appeal rows | `tests/appeal-ui.test.tsx` (reducer: failure keeps note, retry, no double submit; rendered states), `tests/repair2.test.tsx` §1 (other participant clears → overturned, undeliverable, visible in the open chat, nothing resurrected); browser: appeal from an open chat, reload keeps state, overturn visible without reload | pass |
 | 2 | 1.5 s polling for budget-deferred messages | `chat-queries.ts` loads `next_attempt_at`; `fastPollDue` in `held-messages.ts`; `Conversation.tsx` | `appeal-ui` (deferred / ordinary / both / transition), `repair2` §2 (real deferred row, recovery after reset); browser: 4 loads in 12 s, irregular (no 1.5 s cadence), delivery after reset without reload | pass |
 | 3 | Reminder (and outbox) claims consumed an attempt when the provider call never started | 0018 §2 `release_reminder_send`; `reminders.ts` `started` flags + `releaseSend`; `email.ts` release inside the try | `repair2` §3: exhaustion after claim / during address lookup (0 provider calls, no row), previous failure count restored, started timeout = uncertain, overlapping workers send once, outbox pre-send release | pass |
-| 4 | Scheduling: first questions always first; ranking by `last_activity_at` | 0018 §1 `question_work` (stable anchors, rank then age); `tick.ts` keeps the SQL order | `repair2` §4 for 25 s and 48 s budgets: slow generation, eight new first questions per tick, chatty mid conversation; successor and mid questions created within three runs | pass |
+| 4 | Scheduling: first questions always first; ranking by `last_activity_at` | 0018 §1 `question_work` (stable anchors, rank then age). Correction: `tick.ts` still re-interleaved the result in this release (first questions ahead again); fixed in the pilot-readiness release | `repair2` §4 passed because two generations fit per tick; the one-fit case is covered by `pilot-ready.test.tsx` §2 | corrected |
 | 5 | `?host=` bypass in `tests/pg.ts` | parser-based `assertLocalPgDestination` (host, `?host=`, `?hostaddr=`, host lists, `PGHOST`, `PGHOSTADDR`, empty host, credential-free errors) | `tests/pg-guard.test.ts` with an intercepted driver | pass |
 | 6 | Docs and cleanups | CLAUDE.md friends-tier detectors wording; `void started` removed; `conversation_id` no longer sent by the chat screen (tolerated for older clients); `model_budget_reset_at` worker-only (0018 §3) | inspection | done |
 
@@ -316,6 +329,7 @@ Dependency audit: `npm audit --omit=dev` reports 0 vulnerabilities; `npm audit` 
 
 ## Change log
 
+- 2026-10-22 — Pilot-readiness release: held answers recoverable after an appeal and tied to their question, scheduler keeps the database's fair order, fast-poll horizon covers the claim lease, claim-conditional reminder completion, appeal-status line. Migration 0019.
 - 2026-10-22 — Finishing fixes (deployed: 3791cb8, migration 0018, 331 tests): appeals with persisted status on every screen, polling backoff for deferred messages, never-started reminder/outbox releases, stable-age fair question scheduling, parser-based Postgres test guard. Migration 0018.
 - 2026-10-22 — Repair release (deployed: 5749b43, migration 0017, 318 tests): question route authorization and deadline, held messages and appeal outcomes after end/clear, push partial-failure accounting, outbox/reminder deadline handling, fair question scheduling, budget-exhaustion outcome, detector cases, Postgres test guard. Migration 0017.
 - 2026-10-22 — Stabilization release: test isolation hardened, detector lead-in strengths, per-account budgets through the gateway, connection semantics in every consumer, question generation under backlog, push deadline/release, verified lock order with coordinated Postgres tests, appeal eligibility separated from deliverability, consent-event vocabulary, route deadlines, friends-tier prompt, active-only request flags, invitation retention, shared matching throttle, observed matching failures. Migration 0016.
