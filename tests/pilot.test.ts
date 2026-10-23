@@ -389,7 +389,7 @@ describe("sending and moderation", () => {
     // service back: a new message flows
     process.env.AI_PROVIDER = "mock";
     await a.client.rpc("submit_message", { p_conversation: conv, p_client_send_id: "m-after", p_body: "back now" });
-    await admin().from("pending_messages").update({ next_attempt_at: new Date().toISOString() }).eq("conversation_id", conv);
+    await admin().from("pending_messages").update({ next_attempt_at: new Date(Date.now() - 5000).toISOString() }).eq("conversation_id", conv);
     await processPendingBatch();
     const { data: dbg } = await admin().from("pending_messages").select("client_send_id, status, attempts, last_error, next_attempt_at").eq("conversation_id", conv);
     const { data: seen2 } = await b.client.from("approved_messages").select("body").eq("conversation_id", conv);
@@ -402,7 +402,7 @@ describe("sending and moderation", () => {
     delete process.env.ANTHROPIC_API_KEY;
     const { data: pid } = await a.client.rpc("submit_message", { p_conversation: conv, p_client_send_id: "m-review", p_body: "hello?" });
     for (let i = 0; i < 7; i++) {
-      await admin().from("pending_messages").update({ next_attempt_at: new Date().toISOString() }).eq("id", pid);
+      await admin().from("pending_messages").update({ next_attempt_at: new Date(Date.now() - 5000).toISOString() }).eq("id", pid);
       await processPendingBatch();
     }
     process.env.AI_PROVIDER = "mock";
@@ -1206,14 +1206,14 @@ describe("fourth review regressions (2026-10-20)", () => {
     expect(new Date(row.next_attempt_at).getTime()).toBeGreaterThan(Date.now() + 30_000);
     ({ data: claimed } = await admin().rpc("claim_push_queue", { p_limit: 10 }));
     expect(claimed).toEqual([]); // not due yet
-    await admin().from("push_queue").update({ next_attempt_at: new Date().toISOString() }).eq("id", id);
+    await admin().from("push_queue").update({ next_attempt_at: new Date(Date.now() - 5000).toISOString() }).eq("id", id);
     ({ data: claimed } = await admin().rpc("claim_push_queue", { p_limit: 10 }));
     expect(claimed!.map((r: { id: string }) => r.id)).toEqual([id]);
     await admin().rpc("fail_push_queue", { p_id: id, p_error: "push 502" });
     // a failure report for a row that is no longer claimed changes nothing (fifth review)
     ({ data: st } = await admin().rpc("fail_push_queue", { p_id: id, p_error: "stale report" }));
     expect(st).toBe("queued");
-    await admin().from("push_queue").update({ next_attempt_at: new Date().toISOString() }).eq("id", id);
+    await admin().from("push_queue").update({ next_attempt_at: new Date(Date.now() - 5000).toISOString() }).eq("id", id);
     await admin().rpc("claim_push_queue", { p_limit: 10 });
     ({ data: st } = await admin().rpc("fail_push_queue", { p_id: id, p_error: "push 502" }));
     expect(st).toBe("failed");
@@ -1332,7 +1332,7 @@ describe("fifth review regressions (2026-10-21)", () => {
     expect(q!.deliveries[idOf(epA)]).toMatchObject({ status: "failed", attempts: 1 });
     expect(calls.sort()).toEqual([epA, epB].sort());
     // retry: due now, device A recovers, device B is not sent again
-    await admin().from("push_queue").update({ next_attempt_at: new Date().toISOString() }).eq("id", row.id);
+    await admin().from("push_queue").update({ next_attempt_at: new Date(Date.now() - 5000).toISOString() }).eq("id", row.id);
     failA = false; calls.length = 0;
     out = await sendFriendMessagePushes(10, { configured: true, send });
     expect(out).toMatchObject({ sent: 1, retried: 0 });
@@ -1681,7 +1681,7 @@ describe("audit regressions (2026-10-21)", () => {
     const { data: inv } = await a.client.from("invitation_participants").select("invitation_id").eq("account_id", a.id);
     await a.client.rpc("respond_invitation", { p_invitation: inv![0].invitation_id, p_accept: false });
     expect((await rows()).find((r) => r.account_id === a.id)!.status).toBe("cancelled");
-    await admin().from("email_outbox").update({ next_attempt_at: new Date().toISOString() }).eq("id", ra.id);
+    await admin().from("email_outbox").update({ next_attempt_at: new Date(Date.now() - 5000).toISOString() }).eq("id", ra.id);
     calls = 0;
     out = await sendQueuedEmails(10, Deadline.none(), { configured: true, deliver: async () => { calls++; return "mock"; } });
     expect(calls).toBe(0);
