@@ -114,7 +114,7 @@ All nine findings were confirmed and fixed in `2c165c7` (migration `0004_review_
 | — | Sign-in page wording | mentions optional session reminders | — |
 
 ## Pilot-readiness release (2026-10-22, from 24c695b / 0018) — status
-Migration `0019_held_answers.sql`. Focused fixes only; no new audit.
+Code e82041f, migration `0019_held_answers.sql` (hosted), Vercel production Ready. Focused fixes only; no new audit. Verification: `npx vitest run` 26 files / 337 tests (two moderation tests failed once on a host-vs-database clock-skew timing in the test itself, pass in isolation, now fixed); typecheck, lint, production build clean.
 
 | # | Finding | Implementation | Test | Result |
 |---|---|---|---|---|
@@ -329,7 +329,7 @@ Dependency audit: `npm audit --omit=dev` reports 0 vulnerabilities; `npm audit` 
 
 ## Change log
 
-- 2026-10-22 — Pilot-readiness release: held answers recoverable after an appeal and tied to their question, scheduler keeps the database's fair order, fast-poll horizon covers the claim lease, claim-conditional reminder completion, appeal-status line. Migration 0019.
+- 2026-10-22 — Pilot-readiness release (deployed: e82041f, migration 0019): held answers recoverable after an appeal and tied to their question, scheduler keeps the database's fair order, fast-poll horizon covers the claim lease, claim-conditional reminder completion, appeal-status line. Migration 0019.
 - 2026-10-22 — Finishing fixes (deployed: 3791cb8, migration 0018, 331 tests): appeals with persisted status on every screen, polling backoff for deferred messages, never-started reminder/outbox releases, stable-age fair question scheduling, parser-based Postgres test guard. Migration 0018.
 - 2026-10-22 — Repair release (deployed: 5749b43, migration 0017, 318 tests): question route authorization and deadline, held messages and appeal outcomes after end/clear, push partial-failure accounting, outbox/reminder deadline handling, fair question scheduling, budget-exhaustion outcome, detector cases, Postgres test guard. Migration 0017.
 - 2026-10-22 — Stabilization release: test isolation hardened, detector lead-in strengths, per-account budgets through the gateway, connection semantics in every consumer, question generation under backlog, push deadline/release, verified lock order with coordinated Postgres tests, appeal eligibility separated from deliverability, consent-event vocabulary, route deadlines, friends-tier prompt, active-only request flags, invitation retention, shared matching throttle, observed matching failures. Migration 0016.
